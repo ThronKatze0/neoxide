@@ -16,8 +16,8 @@ fn print_new_line(text: &str, y: u16) {
 }
 
 pub fn print_lines(text: &str, start_row: u16) {
-    text.lines()
-        .enumerate()
-        .for_each(|i, line| print_new_line(line, start_row + i));
-    stdout().flush();
+     text.lines()
+         .enumerate()
+         .for_each(|i, line| print_new_line(line, start_row + i));
+     stdout().flush();
 }
