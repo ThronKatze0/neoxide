@@ -33,7 +33,7 @@ where
 {
     async fn new() -> EventHandler<E, A> {
         EventHandler {
-            subscriptions: HashMap::new()
+            subscriptions: HashMap::new(),
         }
     }
 
