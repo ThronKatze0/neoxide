@@ -33,4 +33,5 @@ fn demo() -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() {}
+#[tokio::main]
+async fn main() {}
