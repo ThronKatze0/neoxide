@@ -1,4 +1,6 @@
 use std::io::stdout;
+use strum::EnumCount;
+use strum_macros::{EnumCount as EnumCountMacro, EnumIter};
 
 use crossterm::{
     cursor::{MoveToColumn, MoveToRow},
