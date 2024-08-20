@@ -35,34 +35,5 @@ fn demo() -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(EnumCountMacro)]
-enum Enum {
-    Unit,
-    Tuple(bool),
-    Struct { a: bool, test: (u8, i32) },
-}
-
-impl Enum {
-    fn discriminant(&self) -> u8 {
-        // SAFETY: Because `Self` is marked `repr(u8)`, its layout is a `repr(C)` `union`
-        // between `repr(C)` structs, each of which has the `u8` discriminant as its first
-        // field, so we can read the discriminant without offsetting the pointer.
-        unsafe { *<*const _>::from(self).cast::<u8>() }
-    }
-}
-fn main() {
-    let test = Enum::Struct {
-        a: true,
-        test: (34, 53),
-    };
-    let ptr = &test as *const _ as *const u8;
-    let size = std::mem::size_of_val(&test);
-    let bytes: &[u8] = unsafe { std::slice::from_raw_parts(ptr, size) };
-    let number: u8 = bytes[0];
-    println!("{}", number);
-    get_enum_count(test);
-}
-
-fn get_enum_count<E: EnumCount>(_enum: E) {
-    println!("{}", E::COUNT);
-}
+#[tokio::main]
+async fn main() {}
