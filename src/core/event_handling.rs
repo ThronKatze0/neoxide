@@ -108,7 +108,7 @@ where
         //     let callback_data = Arc::clone(&data);
         //     // task::spawn returns a join handle, that can be used to wait until that task has
         //     // finished. This doesn't do that, meaning this function will return before all
-        //     // callbacks have finished and therefore break the test case. Of course, it is
+        //     // callbacks have finished and therefore breaking the test case (Side note on test case: I rewrote it to only use one task and now the test case works without me waiting for it???). Of course, it is
         //     // debatable wether this is the intended behavior or not.
         //     // also isn't it kinda wasteful to make a new task for every callback?
         //     // tokio::task::spawn(async move {
