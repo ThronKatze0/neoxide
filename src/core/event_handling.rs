@@ -1,14 +1,13 @@
 use futures::future::join_all;
 use rand::Rng;
+use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::{collections::HashMap, ops::AsyncFn};
 use strum::EnumCount;
 use strum_macros::EnumCount as EnumCountMacro;
 use tokio;
-use tokio::pin;
 use tokio::sync::Mutex;
 
 #[derive(Clone, Copy, PartialEq, Hash, EnumCountMacro)]
@@ -30,6 +29,8 @@ struct DemoEventData {
     cursor_position: i32,
     cool_string: String,
 }
+
+// I'm deeply sorry for what I did
 type EventCallbackFunctionType<D> = Arc<
     Box<dyn Fn(Arc<Mutex<D>>) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>> + Send + Sync>,
 >;
@@ -66,7 +67,7 @@ where
         EventHandler {
             subscriptions: Mutex::new({
                 let mut temp = Vec::with_capacity(E::COUNT);
-                for i in 0..E::COUNT {
+                for _ in 0..E::COUNT {
                     temp.push(HashMap::new());
                 }
                 temp
@@ -74,6 +75,8 @@ where
         }
     }
 
+    /// add a callback to a specified event
+    /// returns: randomly generated id which can be used to remove the callback in the future
     pub async fn subscribe(&self, event_callback: EventCallback<E, D>) -> u32 {
         let mut lock = self.subscriptions.lock().await;
         let enum_idx = get_enum_position(event_callback.event).await;
@@ -85,12 +88,19 @@ where
         id
     }
 
-    pub async fn dispatch(&self, event: E, data: D)
+    /// executes all callbacks associated with ``event`` at that moment.
+    ///     - ``event``: event to be triggered
+    ///     - ``data``: any associated data with the event (Note: the current implementation
+    ///     creates the Arc/Mutex structure itself. I have changed it to outsource that to the
+    ///     caller, since they probably want that too and my SignalPointer doesn't work without it
+    ///     and I don't want any Arc<Mutex<Arc<Mutex<D>>>> in my editor. It would be preferable to
+    ///     not have to write Arc::new(Mutex::new()) everytime)
+    pub async fn dispatch(&self, event: E, data: Arc<Mutex<D>>)
     where
         E: Send + 'static,
     {
         let lock = self.subscriptions.lock().await;
-        let data = Arc::new(Mutex::new(data));
+        // let data = Arc::new(Mutex::new(data));
         let callback_map = lock
             .get(get_enum_position(event).await as usize)
             .expect("unsafe code not so good (dispatch)");
@@ -151,10 +161,10 @@ mod tests {
         event_handler
             .dispatch(
                 DemoEvent::NormalEnter,
-                DemoEventData {
+                Arc::new(Mutex::new(DemoEventData {
                     cursor_position: 1,
                     cool_string: "".to_string(),
-                },
+                })),
             )
             .await;
         unsafe {

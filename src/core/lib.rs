@@ -6,6 +6,7 @@ use std::ops::DerefMut;
 use std::pin::Pin;
 use std::sync::Arc;
 use strum::EnumCount;
+use tokio::sync::Mutex;
 
 use crate::core::event_handling::EventHandler;
 use std::sync::mpsc;
@@ -18,22 +19,23 @@ unsafe impl Send for SignalPointerName {}
 /// Simple wrapper, that sends an Event of type 'E' when something is interacting with it
 /// Note: E and A must be of ``'static`` lifetime, since the borrow checker is too stoopid to know
 /// that it they will live long enough anyways
-struct SignalPointer<T, E>
+pub struct SignalPointer<T, E, D>
 where
     E: EnumCount + Copy + Send + 'static,
+    D: Send + 'static,
 {
-    inner: T,
+    pub inner: T,
     name: SignalPointerName,
-    handler: Arc<EventHandler<E, SignalPointerName>>,
+    handler: Arc<EventHandler<E, D>>,
     sender: Speds,
-    deref_event: Option<E>,
-    drop_event: Option<E>,
-    deref_mut_event: Option<E>,
+    pub deref_event: Option<(E, Arc<Mutex<D>>)>,
+    pub deref_mut_event: Option<(E, Arc<Mutex<D>>)>,
 }
 
-impl<T, E> DerefMut for SignalPointer<T, E>
+impl<T, E, D> DerefMut for SignalPointer<T, E, D>
 where
     E: EnumCount + Copy + Send + 'static,
+    D: Send + 'static + Clone,
 {
     fn deref_mut(&mut self) -> &mut T {
         self.send_event(&self.deref_mut_event);
@@ -41,9 +43,10 @@ where
     }
 }
 
-impl<T, E> Deref for SignalPointer<T, E>
+impl<T, E, D> Deref for SignalPointer<T, E, D>
 where
     E: EnumCount + Copy + Send + 'static,
+    D: Send + 'static + Clone,
 {
     type Target = T;
     fn deref(&self) -> &Self::Target {
@@ -52,16 +55,17 @@ where
     }
 }
 
-impl<T, E> SignalPointer<T, E>
+impl<T, E, D> SignalPointer<T, E, D>
 where
     E: EnumCount + Copy + Send + 'static,
+    D: Send + 'static,
 {
-    fn send_event(&self, event: &Option<E>) {
-        if let Some(event) = event {
+    fn send_event(&self, event: &Option<(E, Arc<Mutex<D>>)>) {
+        if let Some((event, data)) = event {
             let event = event.clone();
             let handler = Arc::clone(&self.handler);
-            let name = self.name.clone();
-            let fut = Box::pin(async move { handler.dispatch(event, name).await });
+            let data = Arc::clone(&data);
+            let fut = Box::pin(async move { handler.dispatch(event, data).await });
             self.sender
                 .send(fut)
                 .expect("Event Dispatcher Task offline!"); // should never happen
@@ -70,18 +74,16 @@ where
     pub fn new(
         inner: T,
         name: &'static str,
-        handler: Arc<EventHandler<E, SignalPointerName>>,
-        deref_event: Option<E>,
-        drop_event: Option<E>,
-        deref_mut_event: Option<E>,
-    ) -> SignalPointer<T, E> {
+        handler: Arc<EventHandler<E, D>>,
+        deref_event: Option<(E, Arc<Mutex<D>>)>,
+        deref_mut_event: Option<(E, Arc<Mutex<D>>)>,
+    ) -> SignalPointer<T, E, D> {
         SignalPointer {
             inner,
             name: SignalPointerName(name),
             handler,
             sender: unsafe { SPED.get_sender() },
             deref_event,
-            drop_event,
             deref_mut_event,
         }
     }
