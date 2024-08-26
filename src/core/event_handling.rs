@@ -22,7 +22,11 @@ async fn get_enum_position<T>(enum_type: T) -> u8 {
     let ptr = &enum_type as *const _ as *const u8;
     let size = std::mem::size_of_val(&enum_type);
     let bytes: &[u8] = unsafe { std::slice::from_raw_parts(ptr, size) };
-    bytes[0]
+    if bytes.len() == 0 {
+        0
+    } else {
+        bytes[0]
+    }
 }
 
 struct DemoEventData {
@@ -41,7 +45,7 @@ pub struct EventCallback<E, D> {
 }
 
 impl<E, D> EventCallback<E, D> {
-    fn new(callback: EventCallbackFunctionType<D>, permanent: bool, event: E) -> Self {
+    pub fn new(callback: EventCallbackFunctionType<D>, permanent: bool, event: E) -> Self {
         EventCallback {
             callback,
             permanent,
@@ -94,7 +98,7 @@ where
     ///     creates the Arc/Mutex structure itself. I have changed it to outsource that to the
     ///     caller, since they probably want that too and my SignalPointer doesn't work without it
     ///     and I don't want any Arc<Mutex<Arc<Mutex<D>>>> in my editor. It would be preferable to
-    ///     not have to write Arc::new(Mutex::new()) everytime)
+    ///     not have to write Arc::new(Mutex::new()) everytime though)
     pub async fn dispatch(&self, event: E, data: Arc<Mutex<D>>)
     where
         E: Send + 'static,
