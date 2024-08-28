@@ -138,14 +138,8 @@ impl<T: Display> PrintBorder for T {
                 let tpad = *tpad as usize;
                 let dpad = *dpad as usize;
                 // TODO: This error checking is pathetic
-                assert!(
-            lpad + rpad <= max_width,
-            "{lpad} (lpad) + {rpad} (rpad) is greater than specified max_width ({max_width})"
-        );
-                assert!(
-            tpad + dpad <= max_height,
-            "{tpad} (tpad) + {dpad} (dpad) is greater than specified max_height ({max_height})"
-        );
+                assert!(lpad + rpad <= max_width, "{lpad} (lpad) + {rpad} (rpad) is greater than specified max_width ({max_width})");
+                assert!(tpad + dpad <= max_height, "{tpad} (tpad) + {dpad} (dpad) is greater than specified max_height ({max_height})");
                 assert!(max_width > 1 && max_height > 1);
                 let content = self.to_string();
                 let mut ret = String::with_capacity(max_height * (max_width + 1)); // include newline
@@ -338,85 +332,118 @@ impl<T: Display> PrintBorder for T {
 
 // TODO: fix these
 // #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     #[test]
-//     fn hello_world_no_padding() {
-//         assert_eq!(
-//             "+-----+\n|Hello|\n+-----+\n",
-//             "Hello".to_string_border_full(3, 7, CORNER, HBORDER, VBORDER, 0, 0, 0, 0)
-//         )
-//     }
-//
-//     #[test]
-//     fn hello_world_no_padding_mean_newlines() {
-//         assert_eq!(
-//             "+-----+\n|Hello|\n|World|\n+-----+\n",
-//             "Hello\nWorld".to_string_border_full(4, 7, CORNER, HBORDER, VBORDER, 0, 0, 0, 0)
-//         )
-//     }
-//
-//     #[test]
-//     fn hpaddings_eq() {
-//         assert_eq!(
-//             "+---+\n| H |\n+---+\n",
-//             "H".to_string_border_full(3, 5, CORNER, HBORDER, VBORDER, 1, 1, 0, 0)
-//         );
-//     }
-//
-//     #[test]
-//     fn hpaddings_neq() {
-//         assert_eq!(
-//             "+--+\n| H|\n+--+\n",
-//             "H".to_string_border_full(3, 4, CORNER, HBORDER, VBORDER, 1, 0, 0, 0)
-//         );
-//     }
-//
-//     #[test]
-//     fn vpaddings_eq() {
-//         assert_eq!(
-//             "+-+\n| |\n|H|\n| |\n+-+\n",
-//             "H".to_string_border_full(3, 3, CORNER, HBORDER, VBORDER, 0, 0, 1, 1)
-//         );
-//     }
-//
-//     #[test]
-//     fn vpaddings_neq() {
-//         assert_eq!(
-//             "+-+\n| |\n|H|\n+-+\n",
-//             "H".to_string_border_full(3, 3, CORNER, HBORDER, VBORDER, 0, 0, 1, 0)
-//         );
-//     }
-//
-//     #[test]
-//     fn overflow() {
-//         assert_eq!(
-//             "+-----+\n|Hello|\n|World|\n+-----+\n",
-//             "HelloWorld".to_string_border_full(3, 7, CORNER, HBORDER, VBORDER, 0, 0, 0, 0)
-//         )
-//     }
-//
-//     #[test]
-//     fn width_detection() {
-//         assert_eq!(
-//             "+-----+\n|Hello|\n|foo  |\n+-----+\n",
-//             "Hello\nfoo".to_string_border_ipad(CORNER, HBORDER, VBORDER, 0, 0, 0, 0)
-//         );
-//     }
-//
-//     #[test]
-//     fn width_detection_padding() {
-//         assert_eq!(
-//             "+------+\n| Hello|\n| foo  |\n+------+\n",
-//             "Hello\nfoo".to_string_border_ipad(CORNER, HBORDER, VBORDER, 1, 0, 0, 0)
-//         );
-//     }
-//
-//     #[test]
-//     fn default() {
-//         assert_eq!(
-//             "+---+\n|   |\n| H |\n|   |\n+---+\n",
-//             "H".to_string_border(Some(BufferBorder::default()).as_ref())
-//         );
-//     }
-// }
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hello_world_no_padding() {
+        let config = BufferBorder::blank();
+        assert_eq!(
+            "+-----+\n|Hello|\n+-----+\n",
+            "Hello".to_string_border_full_with_struct(7, 3, Some(&config)),
+        )
+    }
+
+    #[test]
+    fn hello_world_no_padding_mean_newlines() {
+        let config = BufferBorder::blank();
+        assert_eq!(
+            "+-----+\n|Hello|\n|World|\n+-----+\n",
+            "Hello\nWorld".to_string_border_full_with_struct(7, 4, Some(&config))
+        )
+    }
+
+    #[test]
+    fn hpaddings_eq() {
+        let mut config = BufferBorder::blank();
+        config.lpad = 1;
+        config.rpad = 1;
+        assert_eq!(
+            "+---+\n| H |\n+---+\n",
+            "H".to_string_border_full_with_struct(5, 3, Some(&config))
+        );
+    }
+
+    #[test]
+    fn hpaddings_neq() {
+        let mut config = BufferBorder::blank();
+        config.lpad = 1;
+        assert_eq!(
+            "+--+\n| H|\n+--+\n",
+            "H".to_string_border_full_with_struct(4, 3, Some(&config))
+        );
+    }
+
+    #[test]
+    fn vpaddings_eq() {
+        let mut config = BufferBorder::blank();
+        config.tpad = 1;
+        config.dpad = 1;
+        assert_eq!(
+            "+-+\n| |\n|H|\n| |\n+-+\n",
+            "H".to_string_border_full_with_struct(3, 3, Some(&config))
+        );
+    }
+
+    #[test]
+    fn vpaddings_neq() {
+        let mut config = BufferBorder::blank();
+        config.tpad = 1;
+        assert_eq!(
+            "+-+\n| |\n|H|\n+-+\n",
+            "H".to_string_border_full_with_struct(3, 3, Some(&config))
+        );
+    }
+
+    #[test]
+    fn overflow() {
+        // h: 3 w: 7
+        let config = BufferBorder::blank();
+        assert_eq!(
+            "+-----+\n|Hello|\n|World|\n+-----+\n",
+            "HelloWorld".to_string_border_full_with_struct(7, 3, Some(&config))
+        )
+    }
+
+    #[test]
+    fn width_detection() {
+        assert_eq!(
+            "+-----+\n|Hello|\n|foo  |\n+-----+\n",
+            "Hello\nfoo".to_string_border_ipad(
+                (true, true, true, true),
+                CORNER,
+                HBORDER,
+                VBORDER,
+                0,
+                0,
+                0,
+                0
+            )
+        );
+    }
+
+    #[test]
+    fn width_detection_padding() {
+        assert_eq!(
+            "+------+\n| Hello|\n| foo  |\n+------+\n",
+            "Hello\nfoo".to_string_border_ipad(
+                (true, true, true, true),
+                CORNER,
+                HBORDER,
+                VBORDER,
+                1,
+                0,
+                0,
+                0
+            )
+        );
+    }
+
+    #[test]
+    fn default() {
+        assert_eq!(
+            "+---+\n|   |\n| H |\n|   |\n+---+\n",
+            "H".to_string_border(Some(BufferBorder::default()).as_ref())
+        );
+    }
+}

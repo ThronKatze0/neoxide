@@ -132,6 +132,18 @@ impl BufferBorder {
             dpad,
         }
     }
+    pub fn blank() -> BufferBorder {
+        BufferBorder {
+            border_shown: 0xF,
+            corner: [CORNER; 4],
+            hborder: HBORDER,
+            vborder: VBORDER,
+            lpad: 0,
+            rpad: 0,
+            tpad: 0,
+            dpad: 0,
+        }
+    }
     pub fn default() -> BufferBorder {
         BufferBorder {
             border_shown: 0xF,
