@@ -99,8 +99,8 @@ impl Drop for ClientBuffer {
 
 #[derive(Debug)]
 pub struct BufferBorder {
-    border_shown: u8, // xxxx LTDR
-    pub corner: char,
+    border_shown: u8,      // xxxx LTDR
+    pub corner: [char; 4], // clockwise, starting at top-left
     pub hborder: &'static str,
     pub vborder: char,
     pub lpad: u16,
@@ -113,7 +113,7 @@ impl BufferBorder {
     /// creates a Border config with the *chosen* defaults
     pub fn new(
         border_shown: u8,
-        corner: char,
+        corner: [char; 4],
         hborder: &'static str,
         vborder: char,
         lpad: u16,
@@ -135,7 +135,7 @@ impl BufferBorder {
     pub fn default() -> BufferBorder {
         BufferBorder {
             border_shown: 0xF,
-            corner: CORNER,
+            corner: [CORNER; 4],
             hborder: HBORDER,
             vborder: VBORDER,
             lpad: 1,

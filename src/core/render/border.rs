@@ -52,18 +52,18 @@ pub trait PrintBorder {
 fn push_hborder_full(
     buf: &mut String,
     len: usize,
-    corner: char,
+    corner: (char, char),
     hborder: &str,
     vborders: usize,
     show_left: bool,
     show_right: bool,
 ) {
     if show_left {
-        buf.push(corner);
+        buf.push(corner.0);
     }
     buf.push_str(&hborder.repeat(len - vborders));
     if show_right {
-        buf.push(corner);
+        buf.push(corner.1);
     }
     buf.push('\n')
 }
@@ -151,7 +151,13 @@ impl<T: Display> PrintBorder for T {
                 let mut ret = String::with_capacity(max_height * (max_width + 1)); // include newline
                 if show_top {
                     push_hborder_full(
-                        &mut ret, max_width, corner, hborder, vborders, show_left, show_right,
+                        &mut ret,
+                        max_width,
+                        (corner[0], corner[1]),
+                        hborder,
+                        vborders,
+                        show_left,
+                        show_right,
                     );
                 }
 
@@ -219,7 +225,13 @@ impl<T: Display> PrintBorder for T {
                 }
                 if show_bottom {
                     push_hborder_full(
-                        &mut ret, max_width, corner, hborder, vborders, show_left, show_right,
+                        &mut ret,
+                        max_width,
+                        (corner[2], corner[3]),
+                        hborder,
+                        vborders,
+                        show_left,
+                        show_right,
                     );
                 }
                 ret
@@ -296,7 +308,7 @@ impl<T: Display> PrintBorder for T {
         }
         let config = Some(BufferBorder::new(
             border_shown,
-            corner,
+            [corner; 4],
             hborder,
             vborder,
             lpad,
@@ -324,6 +336,7 @@ impl<T: Display> PrintBorder for T {
     }
 }
 
+// TODO: fix these
 // #[cfg(test)]
 // mod tests {
 //     use super::*;
