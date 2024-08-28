@@ -1,6 +1,7 @@
 use crate::core::logger::{self, LogLevel};
 
 use super::border::{PrintBorder, CORNER, HBORDER, VBORDER};
+use crate::core::editor::Buffer as MotionBuffer;
 use async_trait::async_trait;
 use crossterm::cursor::MoveTo;
 use crossterm::style::Print;
@@ -49,6 +50,18 @@ impl ClientBuffer {
             return Err(format!("adding buffer failed: {}", msg));
         }
         Ok(())
+    }
+
+    pub async fn get_content(&self) -> Vec<String> {
+        BUFMAN_GLOB
+            .read()
+            .await
+            .get_buf(self.layer, self.id)
+            .unwrap()
+            .content
+            .lines()
+            .map(|str| str.to_string())
+            .collect()
     }
 }
 
@@ -420,13 +433,13 @@ trait Layout {
 struct FloatingLayout {
     buffers: HashMap<BufferId, Buffer>,
 }
+
+use std::collections::LinkedList;
 struct MasterLayout {
-    // the first one is the master
     master_id: BufferId,
     master: Option<Buffer>,
     split_width: u16,
     buffers: HashMap<BufferId, Buffer>,
-    // buffers_in_order: LinkedList
 }
 
 impl MasterLayout {
@@ -456,30 +469,26 @@ impl MasterLayout {
         master.height = term_height;
         self.master = Some(master);
         if self.buffers.len() > 0 {
-            {
-                let buf = self.buffers.values_mut().next().unwrap();
+            let buffer_height = term_height / len;
+            self.buffers.values_mut().enumerate().for_each(|(i, buf)| {
                 if let Some(border) = &mut buf.border {
                     border.showl(false);
+                    border.showt(false);
                 }
-                buf.height = term_height / len;
+                buf.height = buffer_height;
                 buf.width = term_width - self.split_width;
                 buf.offx = self.split_width;
-                buf.offy = 0;
+                buf.offy = i as u16 * buf.height;
+            });
+
+            // top one needs to have a top border
+            if let Some(border) = &mut self.buffers.values_mut().next().unwrap().border {
+                border.toggle_top();
             }
-            self.buffers
-                .values_mut()
-                .skip(1)
-                .enumerate()
-                .for_each(|(i, buf)| {
-                    if let Some(border) = &mut buf.border {
-                        border.showl(false);
-                        border.showt(false);
-                    }
-                    buf.height = term_height / len;
-                    buf.width = term_width - self.split_width;
-                    buf.offx = self.split_width;
-                    buf.offy = (i + 1) as u16 * buf.height;
-                });
+
+            // make sure the last buffer takes up all the remaining space
+            self.buffers.values_mut().last().unwrap().height =
+                term_height - buffer_height * (self.buffers.len() - 1) as u16;
         }
 
         // BUFMAN_GLOB.write().await.rerender().await
