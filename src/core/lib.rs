@@ -75,9 +75,19 @@ where
         inner: T,
         name: &'static str,
         handler: Arc<EventHandler<E, D>>,
-        deref_event: Option<(E, Arc<Mutex<D>>)>,
-        deref_mut_event: Option<(E, Arc<Mutex<D>>)>,
+        deref_event: Option<(E, D)>,
+        deref_mut_event: Option<(E, D)>,
     ) -> SignalPointer<T, E, D> {
+        let deref_event = if let Some((event, data)) = deref_event {
+            Some((event, Arc::new(Mutex::new(data))))
+        } else {
+            None
+        };
+        let deref_mut_event = if let Some((event, data)) = deref_mut_event {
+            Some((event, Arc::new(Mutex::new(data))))
+        } else {
+            None
+        };
         SignalPointer {
             inner,
             name: SignalPointerName(name),
@@ -102,7 +112,7 @@ where
 type SpedFuture = Pin<Box<dyn Future<Output = ()>>>;
 type Speds = mpsc::Sender<SpedFuture>;
 type Spedr = mpsc::Receiver<SpedFuture>;
-struct SignalPointerEventDispatcher {
+pub struct SignalPointerEventDispatcher {
     queue: Spedr,
     sender: Speds,
 }
@@ -110,6 +120,7 @@ struct SignalPointerEventDispatcher {
 use std::sync::LazyLock;
 static mut SPED: LazyLock<SignalPointerEventDispatcher> =
     LazyLock::new(|| SignalPointerEventDispatcher::new());
+unsafe impl Send for SignalPointerEventDispatcher {}
 impl SignalPointerEventDispatcher {
     pub async fn init() {
         unsafe {
