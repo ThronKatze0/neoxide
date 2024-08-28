@@ -102,7 +102,7 @@ where
 type SpedFuture = Pin<Box<dyn Future<Output = ()>>>;
 type Speds = mpsc::Sender<SpedFuture>;
 type Spedr = mpsc::Receiver<SpedFuture>;
-struct SignalPointerEventDispatcher {
+pub struct SignalPointerEventDispatcher {
     queue: Spedr,
     sender: Speds,
 }
