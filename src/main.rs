@@ -1,5 +1,5 @@
 use futures::{future::join, join};
-use std::io::stdout;
+use std::{io::stdout, process::Command};
 use strum::EnumCount;
 use strum_macros::{EnumCount as EnumCountMacro, EnumIter};
 
@@ -54,19 +54,22 @@ async fn demo_render() -> std::io::Result<()> {
     // buf2.render().await?;
     // terminal::disable_raw_mode()?;
     terminal::enable_raw_mode()?;
-    let buf1 = ClientBuffer::build(0, "buf1").await.unwrap();
+    let buf1 = ClientBuffer::build(0, 0).await.unwrap();
     println!("Added buffer!");
     buf1.set_content(String::from("Test")).await.unwrap();
-    let buf2 = ClientBuffer::build(0, "buf2").await.unwrap();
+    let buf2 = ClientBuffer::build(0, 0).await.unwrap();
     buf2.set_content(String::from("Test 2")).await.unwrap();
-    let buf3 = ClientBuffer::build(0, "buf3").await.unwrap();
+    let buf3 = ClientBuffer::build(0, 0).await.unwrap();
     buf3.set_content(String::from("Test 3")).await.unwrap();
     terminal::disable_raw_mode()?;
     Ok(())
 }
 
+use neoxide::core::logger::LOGFILE_PATH;
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    let _ = Command::new("rm").arg(LOGFILE_PATH).output();
     demo_render().await.unwrap();
     loop {}
     Ok(())

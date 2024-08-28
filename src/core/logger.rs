@@ -29,7 +29,7 @@ pub struct Message<'a> {
     msg: &'a str,
 }
 
-const LOGFILE_PATH: &str = "./log.neo";
+pub const LOGFILE_PATH: &str = "./log.neo";
 impl<'a> Message<'a> {
     pub fn new(level: LogLevel, msg: &'a str) -> Self {
         Message { level, msg }

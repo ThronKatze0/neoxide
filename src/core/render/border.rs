@@ -288,6 +288,8 @@ impl<T: Display> PrintBorder for T {
         dpad: u16,
     ) -> String {
         let mut border_shown = 0x0;
+        // this is the reason why you don't use tuples, but this is deprecated anyways so who cares
+        // how awful this code is
         if show_borders.0 {
             border_shown |= 1;
         }

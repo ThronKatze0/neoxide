@@ -1,20 +1,22 @@
 use crate::core::logger::{self, LogLevel};
 
 use super::border::{PrintBorder, CORNER, HBORDER, VBORDER};
-use crate::core::editor::Buffer as MotionBuffer;
 use async_trait::async_trait;
 use crossterm::cursor::MoveTo;
 use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::{queue, terminal, QueueableCommand};
+use futures::executor::block_on;
+use futures::future::join_all;
 use once_cell::sync::Lazy;
 use std::io::{stdout, Write};
 use std::{collections::HashMap, fmt::Display};
+use tokio::join;
 use tokio::sync::RwLock;
 
 static BUFMAN_GLOB: Lazy<RwLock<BufferManager>> = Lazy::new(|| RwLock::new(BufferManager::new()));
 
-type BufferId = &'static str;
+type BufferId = u32; // NOTE: just don't create 2^32-1 buffers on one layer
 
 pub struct ClientBuffer {
     layer: u8,
@@ -35,7 +37,7 @@ impl ClientBuffer {
         Ok(())
     }
     pub async fn build(layer: u8, id: BufferId) -> Result<Self, String> {
-        BUFMAN_GLOB.write().await.add_new_buf(layer, id).await?;
+        let id = BUFMAN_GLOB.write().await.add_new_buf(layer, id).await?;
         Ok(ClientBuffer { layer, id })
     }
 
@@ -436,7 +438,7 @@ async fn render_internal(
 #[async_trait]
 trait Layout {
     async fn render(&mut self, render_buf: &mut RenderBuffer);
-    async fn add_buf(&mut self, name: BufferId, buf: Buffer) -> Result<(), &str>;
+    async fn add_buf(&mut self, name: BufferId, buf: Buffer) -> Result<BufferId, &str>;
     async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &str>; // now this should never be
     fn get_buf(&self, name: BufferId) -> Result<&Buffer, &str>;
     fn get_buf_mut(&mut self, name: BufferId) -> Result<&mut Buffer, &str>;
@@ -446,9 +448,9 @@ struct FloatingLayout {
     buffers: HashMap<BufferId, Buffer>,
 }
 
-use std::collections::LinkedList;
 struct MasterLayout {
     master_id: BufferId,
+    top_key: BufferId,
     master: Option<Buffer>,
     split_width: u16,
     buffers: HashMap<BufferId, Buffer>,
@@ -457,7 +459,8 @@ struct MasterLayout {
 impl MasterLayout {
     fn new() -> Self {
         MasterLayout {
-            master_id: "",
+            master_id: u32::MAX,
+            top_key: 0,
             master: None,
             split_width: terminal::size().expect("Could not get terminal size!").0 / 2,
             buffers: HashMap::new(),
@@ -482,7 +485,10 @@ impl MasterLayout {
         self.master = Some(master);
         if self.buffers.len() > 0 {
             let buffer_height = term_height / len;
-            self.buffers.values_mut().enumerate().for_each(|(i, buf)| {
+            let mut keys: Vec<BufferId> = self.buffers.keys().map(|k| *k).collect();
+            keys.sort();
+            for (i, key) in keys.iter().enumerate() {
+                let buf = self.buffers.get_mut(key).unwrap();
                 if let Some(border) = &mut buf.border {
                     border.showl(false);
                     border.showt(false);
@@ -491,15 +497,21 @@ impl MasterLayout {
                 buf.width = term_width - self.split_width;
                 buf.offx = self.split_width;
                 buf.offy = i as u16 * buf.height;
-            });
+            }
+
+            // self.buffers.values_mut().enumerate().for_each(|(i, buf)| {
+            //     let msg = format!("{i}: {buf:?}");
+            //     block_on(logger::log(LogLevel::Debug, msg.as_str()));
+            //     // futs.push(async move { logger::log(LogLevel::Debug, msg.as_str()).await });
+            // });
 
             // top one needs to have a top border
-            if let Some(border) = &mut self.buffers.values_mut().next().unwrap().border {
+            if let Some(border) = &mut self.buffers.get_mut(&keys[0]).unwrap().border {
                 border.toggle_top();
             }
 
             // make sure the last buffer takes up all the remaining space
-            self.buffers.values_mut().last().unwrap().height =
+            self.buffers.get_mut(&keys[keys.len() - 1]).unwrap().height =
                 term_height - buffer_height * (self.buffers.len() - 1) as u16;
         }
 
@@ -521,6 +533,12 @@ impl MasterLayout {
             },
             None => panic!("BUG: master field not set"),
         }
+    }
+
+    fn get_id(&mut self) -> BufferId {
+        let ret = self.top_key;
+        self.top_key += 1;
+        ret
     }
 }
 
@@ -553,7 +571,8 @@ impl Layout for MasterLayout {
         render_internal(buffers.into_iter(), render_buf).await;
     }
 
-    async fn add_buf(&mut self, name: BufferId, buf: Buffer) -> Result<(), &str> {
+    async fn add_buf(&mut self, _name: BufferId, buf: Buffer) -> Result<BufferId, &str> {
+        let name = self.get_id();
         if self.master.is_none() {
             self.master = Some(buf);
             self.master_id = name;
@@ -563,7 +582,7 @@ impl Layout for MasterLayout {
             return Err("duplicate");
         }
         self.reorder().await;
-        return Ok(());
+        return Ok(name);
     }
     async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &str> {
         let mut reorder = true;
@@ -634,14 +653,16 @@ impl BufferManager {
         self.layers.push(layout);
     }
 
-    async fn add_new_buf(&mut self, layer: u8, id: BufferId) -> Result<(), &str> {
-        self.add_buf(layer, id, Buffer::default()).await?;
-        Ok(())
+    async fn add_new_buf(&mut self, layer: u8, id: BufferId) -> Result<BufferId, &str> {
+        self.add_buf(layer, id, Buffer::default()).await
     }
-    async fn add_buf(&mut self, layer: u8, id: BufferId, buf: Buffer) -> Result<(), &str> {
-        // TODO: make error handling a thing
-        self.layers[layer as usize].add_buf(id, buf).await?;
-        Ok(())
+    async fn add_buf(&mut self, layer: u8, id: BufferId, buf: Buffer) -> Result<BufferId, &str> {
+        let layer = layer as usize;
+        if layer >= self.layers.len() {
+            // error handling is now a thing
+            return Err("Overflow!");
+        }
+        self.layers[layer].add_buf(id, buf).await
     }
 
     async fn rem_buf(&mut self, layer: usize, id: BufferId) -> Result<Buffer, &str> {
