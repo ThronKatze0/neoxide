@@ -35,9 +35,8 @@ struct DemoEventData {
 }
 
 // I'm deeply sorry for what I did
-type EventCallbackFunctionType<D> = Arc<
-    Box<dyn Fn(Arc<Mutex<D>>) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>> + Send + Sync>,
->;
+type EventCallbackFunctionType<D> =
+    Arc<Box<dyn Fn(Arc<Mutex<D>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>;
 pub struct EventCallback<E, D> {
     callback: EventCallbackFunctionType<D>,
     permanent: bool,
@@ -67,7 +66,7 @@ where
     E: EnumCount + Clone + Copy + Send + 'static,
     D: Send + 'static,
 {
-    pub async fn new() -> EventHandler<E, D> {
+    pub fn new() -> EventHandler<E, D> {
         EventHandler {
             subscriptions: Mutex::new({
                 let mut temp = Vec::with_capacity(E::COUNT);
@@ -150,7 +149,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_handler() {
-        let event_handler = EventHandler::<DemoEvent, DemoEventData>::new().await;
+        let event_handler = EventHandler::<DemoEvent, DemoEventData>::new();
         let event_callback = EventCallback::new(
             Arc::new(Box::new(|_| {
                 unsafe {
