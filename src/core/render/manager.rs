@@ -48,7 +48,6 @@ unsafe impl Sync for EventData {}
 async fn set_resize_events() {}
 
 type BufferId = u32; // NOTE: just don't create 2^32-1 buffers on one layer
-
 pub struct ClientBuffer {
     layer: u8,
     id: BufferId,
@@ -216,7 +215,7 @@ impl BufferBorder {
     pub fn default() -> BufferBorder {
         BufferBorder {
             border_shown: 0xF,
-            corner: [CORNER; 4],
+            corner: ['╭', '╮', '╯', '╰'],
             hborder: HBORDER,
             vborder: VBORDER,
             lpad: 1,
