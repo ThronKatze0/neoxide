@@ -63,7 +63,9 @@ impl ClientBuffer {
         let buf = handle.get_buf_mut(self.layer, self.id)?;
         buf.content = content;
         logger::log(LogLevel::Normal, "start rerendering").await;
-        handle.rerender().await.unwrap();
+        if let Err(err) = handle.rerender().await {
+            return Err(format!("Error when rerendering: {err}"));
+        }
         logger::log(LogLevel::Normal, "finish rerendering (for realz)").await;
         Ok(())
     }
