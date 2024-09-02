@@ -1,3 +1,4 @@
+use neoxide::core::io;
 use std::io::{prelude::*, stdin};
 use std::ops::AddAssign;
 use std::time::Duration;
@@ -83,8 +84,9 @@ async fn benchmark(rounds: u32) {
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let _ = Command::new("rm").arg(LOGFILE_PATH).output();
+    let buf = io::open_file("log.neo2").await;
     // bench(10).await;
-    demo_render().await.unwrap();
+    // demo_render().await.unwrap();
     // let mut stdin = stdin();
     // let _ = stdin.read(&mut [0u8]).unwrap();
     Ok(())

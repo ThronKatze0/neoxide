@@ -1,0 +1,28 @@
+[LOG] start rerendering
+[LOG] cleared render_buf bitmap
+[LOG] rendering layer 0...
+[LOG] finish rendering layers
+[LOG] finish rerendering
+[LOG] finish rerendering (for realz)
+[DEBUG] 0: Buffer { offx: 0, offy: 0, width: 20, height: 20, border: Some(BufferBorder { border_shown: 15, corner: ['+', '+', '+', '+'], hborder: "-", vborder: '|', lpad: 1, rpad: 1, tpad: 1, dpad: 1 }), content: "" }
+[LOG] start rerendering
+[LOG] cleared render_buf bitmap
+[LOG] rendering layer 0...
+[LOG] finish rendering layers
+[LOG] finish rerendering
+[LOG] finish rerendering (for realz)
+[DEBUG] 0: Buffer { offx: 109, offy: 0, width: 109, height: 49, border: Some(BufferBorder { border_shown: 7, corner: ['+', '+', '+', '+'], hborder: "-", vborder: '|', lpad: 1, rpad: 1, tpad: 1, dpad: 1 }), content: "Test 2" }
+[DEBUG] 1: Buffer { offx: 0, offy: 0, width: 20, height: 20, border: Some(BufferBorder { border_shown: 15, corner: ['+', '+', '+', '+'], hborder: "-", vborder: '|', lpad: 1, rpad: 1, tpad: 1, dpad: 1 }), content: "" }
+[LOG] start rerendering
+[LOG] cleared render_buf bitmap
+[LOG] rendering layer 0...
+[LOG] finish rendering layers
+[LOG] finish rerendering
+[LOG] finish rerendering (for realz)
+[LOG] Dropping this Internal Buffer (id=2): Ok(Buffer { offx: 109, offy: 24, width: 109, height: 25, border: Some(BufferBorder { border_shown: 3, corner: ['+', '+', '+', '+'], hborder: "-", vborder: '|', lpad: 1, rpad: 1, tpad: 1, dpad: 1 }), content: "Test 3" })
+[LOG] Dropping this Internal Buffer (id=0): Ok(Buffer { offx: 0, offy: 0, width: 109, height: 49, border: Some(BufferBorder { border_shown: 15, corner: ['+', '+', '+', '+'], hborder: "-", vborder: '|', lpad: 1, rpad: 1, tpad: 1, dpad: 1 }), content: "Test" })
+[LOG] Dropping this Internal Buffer (id=1): Ok(Buffer { offx: 109, offy: 0, width: 109, height: 24, border: Some(BufferBorder { border_shown: 7, corner: ['+', '+', '+', '+'], hborder: "-", vborder: '|', lpad: 1, rpad: 1, tpad: 1, dpad: 1 }), content: "Test 2" })
+[DEBUG] 0: Buffer { offx: 109, offy: 0, width: 109, height: 24, border: Some(BufferBorder { border_shown: 7, corner: ['+', '+', '+', '+'], hborder: "-", vborder: '|', lpad: 1, rpad: 1, tpad: 1, dpad: 1 }), content: "Test 2" }
+[LOG] Dropped buffer 2
+[LOG] Dropped buffer 0
+[LOG] Dropped buffer 1
