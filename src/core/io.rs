@@ -5,6 +5,11 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 
+use super::{
+    logger::{self, LogLevel},
+    render::ClientBuffer,
+};
+
 pub async fn read(reader: impl AsyncReadExt, start_size: usize) -> std::io::Result<String> {
     let mut ret = String::with_capacity(start_size);
     let mut reader = Box::pin(reader);
@@ -36,6 +41,20 @@ pub async fn read_n_bytes_from_file(
     let mut file = File::open(file_name).await?;
     file.seek(SeekFrom::Start(off)).await?;
     read_n_bytes(file, bytes_to_read).await
+}
+
+pub async fn open_file(file_name: &str) -> std::io::Result<ClientBuffer> {
+    let mut c = ClientBuffer::build_on_tiled(2).await;
+    while let Err(_) = c {
+        // this is life now
+        c = ClientBuffer::build_on_tiled(2).await;
+    }
+    let c = c.unwrap();
+    if let Err(msg) = c.set_content(read_file(file_name).await?).await {
+        logger::log(LogLevel::Error, &msg).await;
+        return Err(std::io::ErrorKind::Other.into());
+    }
+    Ok(c)
 }
 
 // pub async fn write<T>(writer: impl AsyncWriteExt, buf: impl Buf) -> std::io::Result<()> {
