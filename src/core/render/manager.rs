@@ -1,3 +1,4 @@
+use crate::core::event_handling::{EventCallback, EventHandler};
 use crate::core::logger::{self, LogLevel};
 
 use super::border::{PrintBorder, CORNER, HBORDER, VBORDER};
@@ -6,12 +7,45 @@ use crossterm::cursor::MoveTo;
 use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::{queue, terminal, QueueableCommand};
+use downcast_rs::{impl_downcast, DowncastSync};
+use futures::executor::block_on;
 use once_cell::sync::Lazy;
 use std::io::{stdout, Write};
+use std::sync::Arc;
 use std::{collections::HashMap, fmt::Display};
-use tokio::sync::RwLock;
+use strum_macros::EnumCount;
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 static BUFMAN_GLOB: Lazy<RwLock<BufferManager>> = Lazy::new(|| RwLock::new(BufferManager::new()));
+static RENDER_EVH: Lazy<EventHandler<Event, EventData>> = Lazy::new(|| {
+    let evh = EventHandler::new();
+    let callback: EventCallback<Event, _> = EventCallback::new(
+        Arc::new(Box::new(|_: Arc<Mutex<_>>| {
+            let fut = async { BUFMAN_GLOB.write().await.resize().await.unwrap() };
+            Box::pin(fut)
+        })),
+        true,
+        Event::Resize,
+    );
+    block_on(evh.subscribe(callback));
+    evh
+});
+async fn bufman_read<'a>() -> RwLockReadGuard<'a, BufferManager> {
+    BUFMAN_GLOB.read().await
+}
+async fn bufman_write<'a>() -> RwLockWriteGuard<'a, BufferManager> {
+    BUFMAN_GLOB.write().await
+}
+unsafe impl Sync for BufferManager {}
+
+#[derive(Clone, Copy, EnumCount)]
+enum Event {
+    Resize,
+}
+struct EventData;
+unsafe impl Sync for Event {}
+unsafe impl Sync for EventData {}
+async fn set_resize_events() {}
 
 type BufferId = u32; // NOTE: just don't create 2^32-1 buffers on one layer
 
@@ -33,9 +67,28 @@ impl ClientBuffer {
         logger::log(LogLevel::Normal, "finish rerendering (for realz)").await;
         Ok(())
     }
-    pub async fn build(layer: u8, id: BufferId) -> Result<Self, String> {
-        let id = BUFMAN_GLOB.write().await.add_new_buf(layer, id).await?;
-        Ok(ClientBuffer { layer, id })
+    pub async fn build(id: BufferId, tiled: bool) -> Result<Self, String> {
+        let mut handle = bufman_write().await;
+        let vec = if tiled {
+            &handle.tiled_layouts
+        } else {
+            &handle.free_layouts
+        };
+        for layer in vec.iter() {
+            if !handle.layers[*layer].is_full() {
+                let layer = *layer as u8;
+                let id = handle.add_new_buf(layer, id).await?;
+                return Ok(ClientBuffer { layer, id });
+            }
+        }
+        Err("all layers full!".to_string())
+    }
+
+    pub async fn build_on_tiled(id: BufferId) -> Result<Self, String> {
+        ClientBuffer::build(id, true).await
+    }
+    pub async fn build_on_free(id: BufferId) -> Result<Self, String> {
+        ClientBuffer::build(id, false).await
     }
 
     pub async fn move_to_layer(&mut self, layer: u8) -> Result<(), String> {
@@ -56,11 +109,20 @@ impl ClientBuffer {
             .read()
             .await
             .get_buf(self.layer, self.id)
-            .unwrap()
+            .expect(format!("Orphaned Client Buffer: {}/{}", self.layer, self.id).as_str())
             .content
             .lines()
             .map(|str| str.to_string())
             .collect()
+    }
+
+    pub async fn center(&self) {
+        BUFMAN_GLOB
+            .write()
+            .await
+            .get_buf_mut(self.layer, self.id)
+            .expect("Orphaned Clientbuffer!")
+            .center()
     }
 }
 
@@ -69,8 +131,13 @@ impl Drop for ClientBuffer {
         let layer = self.layer;
         let id = self.id;
         // this is the best i can do for now
-        // .blocking_write() crashes the entire program
-        tokio::spawn(async move {
+        // .blocking_write() crashes the entire program (no wonder, tokio doesn't like it when you
+        // block their threads)
+        // BUG: This causes a race condition, where BufferManager is not quick enough to clean old
+        // buffers up and falsely reports, that it has no more room for new buffers
+        // I'm open to suggestions on how to fix this
+        // NOTE: look into making a separate listener thread for this
+        let handle = tokio::spawn(async move {
             logger::log(
                 LogLevel::Normal,
                 format!(
@@ -93,6 +160,7 @@ impl Drop for ClientBuffer {
                 );
             logger::log(LogLevel::Normal, format!("Dropped buffer {id}").as_str()).await;
         });
+        // let _ = block_on(handle);
     }
 }
 
@@ -194,18 +262,24 @@ impl BufferBorder {
             self.border_shown = 0;
         }
     }
-    pub fn get_borders_shown(&self) -> (bool, bool, bool, bool) {
-        (
+    pub fn get_borders_shown(&self) -> [bool; 4] {
+        [
             self.border_shown >> 3 & 1 > 0,
             self.border_shown >> 2 & 1 > 0,
             self.border_shown >> 1 & 1 > 0,
             self.border_shown >> 0 & 1 > 0, // >> 0 is just for aesthetics
-        )
+        ]
+    }
+
+    pub fn get_number_of_borders(&self) -> (u16, u16) {
+        let hborders = (self.border_shown & 0x06).count_ones() as u16;
+        let vborders = (self.border_shown & 0x09).count_ones() as u16;
+        (vborders, hborders)
     }
 }
 
 #[derive(Debug)]
-struct Buffer {
+pub struct Buffer {
     offx: u16,
     offy: u16,
     width: u16,
@@ -225,9 +299,51 @@ impl Buffer {
             content: String::new(),
         }
     }
+    pub fn border(&self) -> Option<&BufferBorder> {
+        self.border.as_ref()
+    }
+    pub fn size(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+    pub fn offsets(&self) -> (u16, u16) {
+        (self.offx, self.offy)
+    }
 
     fn default() -> Self {
         Buffer::new(0, 0, 20, 20)
+    }
+
+    fn center(&mut self) {
+        let len = self.get_auto_width();
+        let mut border = match self.border.take() {
+            Some(b) => b,
+            None => BufferBorder::blank(),
+        };
+        border.tpad = (self.height - 1 - self.content.lines().count() as u16) / 2;
+        border.lpad = (self.width - len as u16) / 2;
+        self.border = Some(border);
+    }
+
+    fn get_auto_width(&self) -> usize {
+        self.content
+            .lines()
+            .max_by(|x, y| x.len().cmp(&y.len()))
+            .unwrap_or("")
+            .len()
+    }
+
+    fn auto_size(&mut self) {
+        let blank = BufferBorder::blank();
+        let BufferBorder {
+            lpad,
+            rpad,
+            tpad,
+            dpad,
+            ..
+        } = self.border.as_ref().unwrap_or(&blank);
+        let (width, height) = self.get_auto_size(*lpad, *rpad, *tpad, *dpad);
+        self.width = width;
+        self.height = height;
     }
 
     // async fn render_fixed_size(&self) -> std::io::Result<()> {
@@ -269,7 +385,7 @@ const BITS_PER_EL: usize = 32;
 const MAX_VAL_EL: u32 = u32::MAX;
 const GAP_CHAR: char = '@';
 #[derive(Debug)]
-struct RenderBuffer {
+pub struct RenderBuffer {
     data: Vec<char>, // is there something faster than this?
     write_locks: Vec<u32>,
 }
@@ -319,7 +435,9 @@ impl RenderBuffer {
             }
         }
     }
-    async fn conv_idx(x: usize, y: usize, term_width: u16) -> usize {
+
+    #[inline(always)]
+    fn conv_idx(x: usize, y: usize, term_width: u16) -> usize {
         x + y * (term_width as usize)
     }
     fn check_lock(&mut self, idx: usize) -> bool {
@@ -331,22 +449,21 @@ impl RenderBuffer {
             false
         }
     }
-    async fn write_internal(&mut self, idx: usize, char: char) {
+    pub async fn write(&mut self, x: usize, y: usize, term_width: u16, char: char) {
+        let idx = RenderBuffer::conv_idx(x, y, term_width);
         if self.check_lock(idx) {
             // eprintln!("{idx} = {:b}", self.write_locks[idx / BITS_PER_EL]);
             self.data[idx] = char;
         }
     }
-    async fn write(&mut self, x: usize, y: usize, term_width: u16, char: char) {
-        let idx = RenderBuffer::conv_idx(x, y, term_width).await;
-        self.write_internal(idx, char).await;
-    }
-    async fn write_str(&mut self, x: usize, y: usize, term_width: u16, str: &str) {
-        let idx = RenderBuffer::conv_idx(x, y, term_width).await;
-        for (i, char) in str.chars().enumerate() {
-            let idx = i + idx;
-            self.write_internal(idx, char).await; // this should be fine, since the checks
-                                                  // should have already happened
+    pub async fn write_str(&mut self, x: usize, y: usize, term_width: u16, str: &str) {
+        let mut idx = RenderBuffer::conv_idx(x, y, term_width);
+        for char in str.chars() {
+            if self.check_lock(idx) {
+                self.data[idx] = char;
+            }
+            idx += 1;
+            // should have already happened
         }
     }
 
@@ -354,7 +471,6 @@ impl RenderBuffer {
     fn flush(&mut self) -> std::io::Result<()> {
         self.fill_rest();
         queue!(stdout(), Clear(ClearType::All), MoveTo(0, 0))?;
-        stdout().queue(MoveTo(0, 0))?;
         self.data.iter().try_for_each(|c| {
             stdout().queue(Print(c))?;
             Ok::<(), std::io::Error>(())
@@ -412,6 +528,18 @@ mod tests {
 //         }
 //     });
 // }
+async fn render_internal_faster(
+    buffers: impl Iterator<Item = &Buffer> + Send,
+    render_buf: &mut RenderBuffer,
+) {
+    let (term_width, term_height) = terminal::size().unwrap();
+    eprintln!("width = {term_width} height = {term_height}");
+    // TODO: make this faster
+    for buf in buffers {
+        logger::log(LogLevel::Debug, format!("{:?}", buf).as_str()).await;
+        buf.render(term_width, render_buf).await;
+    }
+}
 async fn render_internal(
     buffers: impl Iterator<Item = &Buffer> + Send,
     render_buf: &mut RenderBuffer,
@@ -420,7 +548,7 @@ async fn render_internal(
     eprintln!("width = {term_width} height = {term_height}");
     // TODO: make this faster
     for buf in buffers {
-        dbg!(buf);
+        logger::log(LogLevel::Debug, format!("{:?}", buf).as_str()).await;
         let string =
             buf.to_string_border_full_with_struct(buf.width, buf.height, buf.border.as_ref());
         assert_eq!(string.len(), ((buf.width + 1) * buf.height) as usize);
@@ -433,32 +561,48 @@ async fn render_internal(
 }
 
 #[async_trait]
-trait Layout {
+trait Layout: DowncastSync {
     async fn render(&mut self, render_buf: &mut RenderBuffer);
     async fn add_buf(&mut self, name: BufferId, buf: Buffer) -> Result<BufferId, &str>;
     async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &str>; // now this should never be
     fn get_buf(&self, name: BufferId) -> Result<&Buffer, &str>;
     fn get_buf_mut(&mut self, name: BufferId) -> Result<&mut Buffer, &str>;
+    fn is_full(&self) -> bool;
 }
+impl_downcast!(sync Layout);
 
 mod builtin_layouts;
 use builtin_layouts::MasterLayout;
 
 struct BufferManager {
     render_buf: RenderBuffer,
-    layers: Vec<Box<dyn Layout + Send + Sync>>,
+    tiled_layouts: Vec<usize>,
+    free_layouts: Vec<usize>,
+    layers: Vec<Box<dyn Layout>>,
     term_width: u16,
     term_height: u16,
 }
 
+/// this is completely safe, since the editor should never run without being able to query the
+/// terminal size
+pub fn size() -> (u16, u16) {
+    terminal::size().expect("Couldn't fetch terminal size!")
+}
+
+type DynLayout = Box<dyn Layout + Send + Sync>;
+
+// TODO: the most ideal way to make the public API here would be to have some assoc fns, that
+// handle the lock obtaining stuff, instead of direct method calls
 impl BufferManager {
     fn new() -> BufferManager {
-        let (term_width, term_height) = terminal::size().expect("Couldn't fetch terminal size!");
+        let (term_width, term_height) = size();
         let mut layers = Vec::with_capacity(2);
-        let ml: Box<dyn Layout + Send + Sync> = Box::new(MasterLayout::new());
+        let ml: Box<dyn Layout> = Box::new(MasterLayout::new());
         layers.push(ml);
         BufferManager {
             render_buf: RenderBuffer::new(term_width, term_height),
+            tiled_layouts: vec![0],   // TODO: not final
+            free_layouts: Vec::new(), // TODO: not final
             layers,
             term_width,
             term_height,
@@ -478,7 +622,16 @@ impl BufferManager {
         Ok(())
     }
 
-    fn add_layer(&mut self, layout: Box<dyn Layout + Send + Sync>) {
+    fn add_tiled_layer(&mut self, layout: DynLayout) {
+        self.tiled_layouts.push(self.layers.len());
+        self.add_layer(layout);
+    }
+    fn add_free_layer(&mut self, layout: DynLayout) {
+        self.free_layouts.push(self.layers.len());
+        self.add_layer(layout);
+    }
+
+    fn add_layer(&mut self, layout: DynLayout) {
         self.layers.push(layout);
     }
 
@@ -505,4 +658,34 @@ impl BufferManager {
     fn get_buf_mut(&mut self, layer: u8, id: BufferId) -> Result<&mut Buffer, &str> {
         self.layers[layer as usize].get_buf_mut(id)
     }
+
+    async fn resize(&mut self) -> std::io::Result<()> {
+        let (w, h) = terminal::size().unwrap();
+        self.term_width = w;
+        self.term_height = h;
+        self.rerender().await
+    }
+}
+
+use std::time::{Duration, Instant};
+
+pub async fn bench(buffers: usize) -> Duration {
+    let now = Instant::now();
+    let mut buffer_vec = Vec::with_capacity(buffers);
+    for _ in 0..buffers {
+        let mut buf = ClientBuffer::build(0, true).await;
+        // bandaid until we figure something for the Drop bug out
+        while let Err(_) = buf {
+            buf = ClientBuffer::build(0, true).await;
+        }
+        let buf = buf.unwrap();
+        buffer_vec.push(buf);
+        let _ = buffer_vec
+            .last()
+            .unwrap()
+            .set_content("test".to_string())
+            .await;
+    }
+    now.elapsed()
+    // println!("Elapsed: {:.2?}", elapsed);
 }

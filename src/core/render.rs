@@ -7,7 +7,7 @@ use crossterm::{cursor::MoveTo, queue, style::Print};
 // })
 
 mod border;
-mod manager;
+pub mod manager;
 
 pub use manager::ClientBuffer;
 

@@ -4,12 +4,26 @@ struct FloatingLayout {
     buffers: HashMap<BufferId, Buffer>,
 }
 
+#[derive(Debug)]
 pub struct MasterLayout {
     master_id: BufferId,
     top_key: BufferId,
     master: Option<Buffer>,
     split_width: u16,
     buffers: HashMap<BufferId, Buffer>,
+}
+
+trait MasterLayoutClientAPI {
+    async fn make_master(&self) -> Result<(), &str>;
+}
+
+impl MasterLayoutClientAPI for ClientBuffer {
+    async fn make_master(&self) -> Result<(), &str> {
+        match bufman_write().await.layers[self.layer as usize].downcast_mut::<MasterLayout>() {
+            Some(masterl) => masterl.change_master(self.id),
+            None => Err("Layer is not a MasterLayout"),
+        }
+    }
 }
 
 impl MasterLayout {
@@ -74,7 +88,7 @@ impl MasterLayout {
         // BUFMAN_GLOB.write().await.rerender().await
     }
 
-    pub fn change_master(&mut self, new_master_id: BufferId) -> Result<(), &str> {
+    pub fn change_master(&mut self, new_master_id: BufferId) -> Result<(), &'static str> {
         match self.master.take() {
             Some(master) => match self.buffers.try_insert(self.master_id, master) {
                 Ok(_) => match self.buffers.remove(&new_master_id) {
@@ -124,7 +138,7 @@ impl Layout for MasterLayout {
         }
         let mut buffers = vec![self.master.as_ref().unwrap()];
         buffers.extend(self.buffers.values());
-        render_internal(buffers.into_iter(), render_buf).await;
+        render_internal_faster(buffers.into_iter(), render_buf).await;
     }
 
     async fn add_buf(&mut self, _name: BufferId, buf: Buffer) -> Result<BufferId, &str> {
@@ -155,7 +169,10 @@ impl Layout for MasterLayout {
                 }
                 None => {
                     reorder = false;
-                    Ok(self.master.take().expect("rem_buf third impossible state"))
+                    match self.master.take() {
+                        Some(buf) => Ok(buf),
+                        None => Err("Masterlayout empty!"),
+                    }
                 }
             }
         } else {
@@ -168,5 +185,8 @@ impl Layout for MasterLayout {
             self.reorder().await;
         }
         res
+    }
+    fn is_full(&self) -> bool {
+        (self.buffers.len() + (if self.master.is_some() { 1 } else { 0 })) >= 11
     }
 }

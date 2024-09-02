@@ -1,4 +1,4 @@
-use super::manager::BufferBorder;
+use super::manager::{Buffer, BufferBorder, RenderBuffer};
 use std::cmp::min;
 use std::fmt::Display;
 // TODO: change to unicode
@@ -7,104 +7,272 @@ pub const VBORDER: char = '|';
 pub const _DOUBLE_LINEAR_BORDER: char = '=';
 pub const CORNER: char = '+';
 pub const PADDING: &str = " ";
+mod param_structs;
+use param_structs::{CreateLineParams, WriteLineParams};
 
-pub trait PrintBorder {
+#[inline]
+async fn write_str(render_buf: &mut RenderBuffer, params: &mut WriteLineParams<'_>) {
+    // let end = min(
+    //     params.width_without_border as usize - (params.border.rpad + params.border.lpad) as usize,
+    //     params.line.len(),
+    // );
+    render_buf
+        .write_str(
+            params.offx,
+            params.offy,
+            params.term_width,
+            params.line, // may need to also consider padding
+        )
+        .await;
+    params.offx += params.line.len();
+}
+
+#[inline]
+async fn write_corner(
+    render_buf: &mut RenderBuffer,
+    params: &mut WriteLineParams<'_>,
+    border_pos: usize,
+) {
+    if params.borders_shown[border_pos] {
+        render_buf
+            .write(
+                params.offx,
+                params.offy,
+                params.term_width,
+                params.border.corner[border_pos],
+            )
+            .await;
+        params.offx += 1;
+    }
+}
+
+#[inline]
+async fn write_border(
+    render_buf: &mut RenderBuffer,
+    params: &mut WriteLineParams<'_>,
+    border_pos: usize,
+) {
+    if params.borders_shown[border_pos] {
+        render_buf
+            .write(
+                params.offx,
+                params.offy,
+                params.term_width,
+                params.border.vborder,
+            )
+            .await;
+        params.offx += 1;
+    }
+}
+
+#[inline]
+async fn write_line_without_padding(
+    render_buf: &mut RenderBuffer,
+    params: &mut WriteLineParams<'_>,
+) {
+    params.offx = params.orig_offx;
+    write_str(render_buf, params).await;
+    params.offy += 1;
+}
+
+#[inline]
+async fn write_padding<'a>(
+    render_buf: &mut RenderBuffer,
+    params: &mut WriteLineParams<'_>,
+    pad: u16,
+) {
+    let blank = PADDING.repeat(pad as usize);
+    let mut temp_padding = WriteLineParams {
+        line: &blank,
+        ..*params
+    };
+    write_str(render_buf, &mut temp_padding).await;
+    params.offx = temp_padding.offx;
+}
+
+#[inline]
+async fn write_line_with_padding(render_buf: &mut RenderBuffer, params: &mut WriteLineParams<'_>) {
+    params.offx = params.orig_offx;
+    write_border(render_buf, params, 0).await;
+
+    write_padding(render_buf, params, params.border.lpad).await;
+
+    write_str(render_buf, params).await;
+
+    write_padding(render_buf, params, params.border.rpad).await;
+    let rest_space = params.width_without_border
+        - (params.offx - params.orig_offx - if params.borders_shown[0] { 1 } else { 0 }) as u16;
+    write_padding(render_buf, params, rest_space).await;
+
+    write_border(render_buf, params, 3).await;
+    params.offy += 1;
+}
+
+#[inline]
+fn create_line(params: &CreateLineParams) -> String {
+    let mut ret = String::with_capacity(params.width as usize);
+    if params.show_left {
+        ret.push(params.cornerl);
+    }
+    ret.push_str(&params.filler.repeat(params.width_without_border as usize));
+    if params.show_right {
+        ret.push(params.cornerr);
+    }
+    ret
+}
+
+impl Buffer {
+    pub async fn render(&self, term_width: u16, render_buf: &mut RenderBuffer) {
+        let content = self.to_string();
+        let border = self.border();
+        let offsets = self.offsets();
+        let (offx, offy) = (offsets.0 as usize, offsets.1 as usize);
+        match border {
+            Some(border) => {
+                let borders_shown = border.get_borders_shown();
+                let (width, height) = self.size();
+                let (vborders, hborders) = border.get_number_of_borders();
+                let width_without_border = width - vborders;
+                let height_without_border = height - hborders;
+                let cl_params = CreateLineParams {
+                    width,
+                    show_left: borders_shown[0],
+                    show_right: borders_shown[3],
+                    cornerl: border.corner[0],
+                    cornerr: border.corner[1],
+                    filler: border.hborder,
+                    width_without_border,
+                };
+                let hborder = create_line(&cl_params);
+                // {
+                //     let mut ret = String::with_capacity(width as usize);
+                //     if borders_shown[0] {
+                //         ret.push(border.corner[0]);
+                //     }
+                //     ret.push_str(&border.hborder.repeat(width_without_border as usize));
+                //     if borders_shown[3] {
+                //         ret.push(border.corner[1]);
+                //     }
+                //     ret
+                // };
+                let blank = create_line(&CreateLineParams {
+                    cornerl: border.vborder,
+                    cornerr: border.vborder,
+                    filler: PADDING,
+                    ..cl_params
+                });
+                // {
+                //     let mut ret = String::with_capacity(width as usize);
+                //     ret.push(border.vborder);
+                //     ret.push_str(&PADDING.repeat(width_without_border as usize));
+                //     ret.push(border.vborder);
+                //     ret
+                // };
+
+                let mut params = WriteLineParams {
+                    offx,
+                    orig_offx: offx,
+                    offy,
+                    term_width,
+                    width_without_border,
+                    line: &hborder,
+                    border,
+                    borders_shown,
+                };
+                if borders_shown[1] {
+                    write_line_without_padding(render_buf, &mut params).await;
+                }
+
+                let orig_offy = params.offy;
+                params.line = &blank;
+                for _ in 0..border.tpad {
+                    write_line_without_padding(render_buf, &mut params).await;
+                }
+
+                let mut i = 0;
+                let mut skip_newline = false;
+                while i < content.len() {
+                    let end_idx = if let Some(newline_idx) = content[i..].find('\n') {
+                        skip_newline = true;
+                        newline_idx
+                    } else {
+                        let end_slice = min(i + width_without_border as usize, content.len());
+                        end_slice
+                    };
+                    params.line = &content[i..end_idx];
+                    write_line_with_padding(render_buf, &mut params).await;
+                    i += end_idx;
+                    if skip_newline {
+                        skip_newline = false;
+                        i += 1;
+                    }
+                }
+
+                params.line = &blank;
+                for _ in 0..border.dpad {
+                    write_line_without_padding(render_buf, &mut params).await;
+                }
+
+                let rest_space: i16 =
+                    height_without_border as i16 - (params.offy - orig_offy) as i16;
+                for _ in 0..rest_space {
+                    write_line_without_padding(render_buf, &mut params).await;
+                }
+
+                // assert_eq!(height_without_border - (params.offy - orig_offy) as u16, 0);
+
+                let hborder = create_line(&CreateLineParams {
+                    cornerl: border.corner[3],
+                    cornerr: border.corner[2],
+                    ..cl_params
+                });
+                // {
+                //     let mut ret = String::with_capacity(width as usize);
+                //     if borders_shown[0] {
+                //         ret.push(border.corner[3]);
+                //     }
+                //     ret.push_str(&border.hborder.repeat(width_without_border as usize));
+                //     if borders_shown[3] {
+                //         ret.push(border.corner[2]);
+                //     }
+                //     ret
+                // };
+                // params.line = "";
+                // hborder.replace_range(0..1, &border.corner[3].to_string());
+                params.line = &hborder;
+                if borders_shown[2] {
+                    write_line_without_padding(render_buf, &mut params).await;
+                }
+            }
+            None => {
+                render_buf
+                    .write_str(offx as usize, offy as usize, term_width, &content)
+                    .await
+            }
+        }
+    }
+}
+
+pub trait PrintBorder: Display {
     // fn to_string_border_pad(&self, pad: u16) -> String;
-    fn to_string_border(&self, config: Option<&BufferBorder>) -> String;
-    fn to_string_border_full_with_struct(
-        &self,
-        max_width: u16,
-        max_height: u16,
-        config: Option<&BufferBorder>,
-    ) -> String;
-    fn get_auto_size(&self, lpad: u16, rpad: u16, tpad: u16, dpad: u16) -> (u16, u16);
-    fn to_string_border_ipad(
-        &self,
-        show_borders: (bool, bool, bool, bool),
-        corner: char,
-        hborder: &'static str,
-        vborder: char,
-        lpad: u16,
-        rpad: u16,
-        tpad: u16,
-        dpad: u16,
-    ) -> String;
-
-    #[deprecated(
-        since = "0.1.0",
-        note = "please use to_string_border_full_with_struct instead"
-    )]
-    fn to_string_border_full(
-        &self,
-        max_height: u16,
-        max_width: u16,
-        border_shown: (bool, bool, bool, bool),
-        corner: char,
-        hborder: &'static str,
-        vborder: char,
-        lpad: u16,
-        rpad: u16,
-        tpad: u16,
-        dpad: u16,
-    ) -> String;
-}
-
-fn push_hborder_full(
-    buf: &mut String,
-    len: usize,
-    corner: (char, char),
-    hborder: &str,
-    vborders: usize,
-    show_left: bool,
-    show_right: bool,
-) {
-    if show_left {
-        buf.push(corner.0);
+    fn to_string_border(&self, config: Option<&BufferBorder>) -> String {
+        match config {
+            None => self.to_string(),
+            Some(BufferBorder {
+                lpad,
+                rpad,
+                tpad,
+                dpad,
+                ..
+            }) => {
+                let (max_width, max_height) = self.get_auto_size(*lpad, *rpad, *tpad, *dpad);
+                self.to_string_border_full_with_struct(max_width, max_height, config)
+            }
+        }
     }
-    buf.push_str(&hborder.repeat(len - vborders));
-    if show_right {
-        buf.push(corner.1);
-    }
-    buf.push('\n')
-}
-
-fn push_line_with_vborder_full(
-    buf: &mut String,
-    line: &str,
-    vborder: char,
-    show_left: bool,
-    show_right: bool,
-) {
-    let prev_len = buf.len();
-    if show_left {
-        buf.push(vborder);
-    }
-    buf.push_str(line);
-    if show_right {
-        buf.push(vborder);
-    }
-    buf.push('\n');
-}
-
-fn push_line_with_vborder_padding(
-    buf: &mut String,
-    line: &str,
-    lpad: usize,
-    rpad: usize,
-    vborder: char,
-    show_left: bool,
-    show_right: bool,
-) {
-    push_line_with_vborder_full(
-        buf,
-        format!("{}{}{}", &PADDING.repeat(lpad), line, &PADDING.repeat(rpad)).as_str(),
-        vborder,
-        show_left,
-        show_right,
-    )
-}
-
-impl<T: Display> PrintBorder for T {
+    // async fn render(&self, render_buf: &mut RenderBuffer) {
+    //     todo!()
+    // }
     fn to_string_border_full_with_struct(
         &self,
         max_width: u16,
@@ -126,8 +294,9 @@ impl<T: Display> PrintBorder for T {
                 let corner = *corner;
                 let hborder = *hborder;
                 let vborder = *vborder;
+                let arr = config.unwrap().get_borders_shown();
                 let (show_left, show_top, show_bottom, show_right) =
-                    config.unwrap().get_borders_shown();
+                    (arr[0], arr[1], arr[2], arr[3]);
                 let hborders = if show_top { 1 } else { 0 } + if show_bottom { 1 } else { 0 };
                 let vborders = if show_left { 1 } else { 0 } + if show_right { 1 } else { 0 };
                 let max_height = max_height as usize;
@@ -232,9 +401,6 @@ impl<T: Display> PrintBorder for T {
             }
         }
     }
-    // fn to_string_border_pad(&self, pad: u16) -> String {
-    //     self.to_string_border_ipad(CORNER, HBORDER, VBORDER, pad, pad, pad, pad)
-    // }
     fn get_auto_size(&self, lpad: u16, rpad: u16, tpad: u16, dpad: u16) -> (u16, u16) {
         let max_width = self
             .to_string()
@@ -274,11 +440,15 @@ impl<T: Display> PrintBorder for T {
         )
     }
 
+    #[deprecated(
+        since = "0.1.0",
+        note = "please use to_string_border_full_with_struct instead"
+    )]
     fn to_string_border_full(
         &self,
         max_height: u16,
         max_width: u16,
-        show_borders: (bool, bool, bool, bool),
+        borders_shown: (bool, bool, bool, bool),
         corner: char,
         hborder: &'static str,
         vborder: char,
@@ -290,16 +460,16 @@ impl<T: Display> PrintBorder for T {
         let mut border_shown = 0x0;
         // this is the reason why you don't use tuples, but this is deprecated anyways so who cares
         // how awful this code is
-        if show_borders.0 {
+        if borders_shown.0 {
             border_shown |= 1;
         }
-        if show_borders.1 {
+        if borders_shown.1 {
             border_shown |= 2;
         }
-        if show_borders.2 {
+        if borders_shown.2 {
             border_shown |= 4;
         }
-        if show_borders.3 {
+        if borders_shown.3 {
             border_shown |= 8;
         }
         let config = Some(BufferBorder::new(
@@ -315,24 +485,111 @@ impl<T: Display> PrintBorder for T {
 
         self.to_string_border_full_with_struct(max_width, max_height, config.as_ref())
     }
-    fn to_string_border(&self, config: Option<&BufferBorder>) -> String {
-        match config {
-            None => self.to_string(),
-            Some(BufferBorder {
-                lpad,
-                rpad,
-                tpad,
-                dpad,
-                ..
-            }) => {
-                let (max_width, max_height) = self.get_auto_size(*lpad, *rpad, *tpad, *dpad);
-                self.to_string_border_full_with_struct(max_width, max_height, config)
-            }
+}
+
+fn push_hborder_full(
+    buf: &mut String,
+    len: usize,
+    corner: (char, char),
+    hborder: &str,
+    vborders: usize,
+    show_left: bool,
+    show_right: bool,
+) {
+    if show_left {
+        buf.push(corner.0);
+    }
+    buf.push_str(&hborder.repeat(len - vborders));
+    if show_right {
+        buf.push(corner.1);
+    }
+    buf.push('\n')
+}
+
+fn push_line_with_vborder_full(
+    buf: &mut String,
+    line: &str,
+    vborder: char,
+    show_left: bool,
+    show_right: bool,
+) {
+    let prev_len = buf.len();
+    if show_left {
+        buf.push(vborder);
+    }
+    buf.push_str(line);
+    if show_right {
+        buf.push(vborder);
+    }
+    buf.push('\n');
+}
+
+fn push_line_with_vborder_padding(
+    buf: &mut String,
+    line: &str,
+    lpad: usize,
+    rpad: usize,
+    vborder: char,
+    show_left: bool,
+    show_right: bool,
+) {
+    push_line_with_vborder_full(
+        buf,
+        format!("{}{}{}", &PADDING.repeat(lpad), line, &PADDING.repeat(rpad)).as_str(),
+        vborder,
+        show_left,
+        show_right,
+    )
+}
+
+impl<T: Display> PrintBorder for T {
+    // fn to_string_border_pad(&self, pad: u16) -> String {
+    //     self.to_string_border_ipad(CORNER, HBORDER, VBORDER, pad, pad, pad, pad)
+    // }
+
+    fn to_string_border_full(
+        &self,
+        max_height: u16,
+        max_width: u16,
+        borders_shown: (bool, bool, bool, bool),
+        corner: char,
+        hborder: &'static str,
+        vborder: char,
+        lpad: u16,
+        rpad: u16,
+        tpad: u16,
+        dpad: u16,
+    ) -> String {
+        let mut border_shown = 0x0;
+        // this is the reason why you don't use tuples, but this is deprecated anyways so who cares
+        // how awful this code is
+        if borders_shown.0 {
+            border_shown |= 1;
         }
+        if borders_shown.1 {
+            border_shown |= 2;
+        }
+        if borders_shown.2 {
+            border_shown |= 4;
+        }
+        if borders_shown.3 {
+            border_shown |= 8;
+        }
+        let config = Some(BufferBorder::new(
+            border_shown,
+            [corner; 4],
+            hborder,
+            vborder,
+            lpad,
+            rpad,
+            tpad,
+            dpad,
+        ));
+
+        self.to_string_border_full_with_struct(max_width, max_height, config.as_ref())
     }
 }
 
-// TODO: fix these
 // #[cfg(test)]
 mod tests {
     use super::*;
