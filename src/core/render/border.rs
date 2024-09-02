@@ -1,3 +1,5 @@
+use crate::core::logger::{self, LogLevel};
+
 use super::manager::{Buffer, BufferBorder, RenderBuffer};
 use std::cmp::min;
 use std::fmt::Display;
@@ -146,30 +148,12 @@ impl Buffer {
                     width_without_border,
                 };
                 let hborder = create_line(&cl_params);
-                // {
-                //     let mut ret = String::with_capacity(width as usize);
-                //     if borders_shown[0] {
-                //         ret.push(border.corner[0]);
-                //     }
-                //     ret.push_str(&border.hborder.repeat(width_without_border as usize));
-                //     if borders_shown[3] {
-                //         ret.push(border.corner[1]);
-                //     }
-                //     ret
-                // };
                 let blank = create_line(&CreateLineParams {
                     cornerl: border.vborder,
                     cornerr: border.vborder,
                     filler: PADDING,
                     ..cl_params
                 });
-                // {
-                //     let mut ret = String::with_capacity(width as usize);
-                //     ret.push(border.vborder);
-                //     ret.push_str(&PADDING.repeat(width_without_border as usize));
-                //     ret.push(border.vborder);
-                //     ret
-                // };
 
                 let mut params = WriteLineParams {
                     offx,
@@ -193,6 +177,8 @@ impl Buffer {
 
                 let mut i = 0;
                 let mut skip_newline = false;
+                let content_width =
+                    (width_without_border - params.border.lpad - params.border.rpad) as usize;
                 while i < content.len() {
                     let end_idx = if let Some(newline_idx) = content[i..].find('\n') {
                         skip_newline = true;
@@ -200,13 +186,18 @@ impl Buffer {
                     } else {
                         content.len()
                     };
-                    let end_idx = min(i + width_without_border as usize, end_idx);
-                    if end_idx == i + width_without_border as usize {
+                    let end_idx = min(i + content_width, end_idx);
+                    if end_idx == i + content_width {
                         skip_newline = false;
                     }
+                    logger::log(
+                        LogLevel::Debug,
+                        format!("{i}..{end_idx} = {}", &content[i..end_idx]).as_str(),
+                    )
+                    .await;
                     params.line = &content[i..end_idx];
                     write_line_with_padding(render_buf, &mut params).await;
-                    i += end_idx;
+                    i += end_idx - i;
                     if skip_newline {
                         skip_newline = false;
                         i += 1;
