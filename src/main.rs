@@ -1,14 +1,13 @@
-use futures::{future::join, join};
+use std::io::{prelude::*, stdin};
+use std::ops::AddAssign;
+use std::time::Duration;
 use std::{io::stdout, process::Command};
-use strum::EnumCount;
-use strum_macros::{EnumCount as EnumCountMacro, EnumIter};
 
 use crossterm::{
     cursor::{MoveToColumn, MoveToRow},
     event, execute,
     style::Print,
     terminal::{self, ClearType},
-    ExecutableCommand,
 };
 
 /// crossterm is a set of "low-level", cross-platform APIs that handle terminal output
@@ -54,23 +53,39 @@ async fn demo_render() -> std::io::Result<()> {
     // buf2.render().await?;
     // terminal::disable_raw_mode()?;
     terminal::enable_raw_mode()?;
-    let buf1 = ClientBuffer::build(0, 0).await.unwrap();
-    println!("Added buffer!");
+    let buf1 = ClientBuffer::build(0, true).await.unwrap();
     buf1.set_content(String::from("Test")).await.unwrap();
-    let buf2 = ClientBuffer::build(0, 0).await.unwrap();
+    let buf2 = ClientBuffer::build(0, true).await.unwrap();
     buf2.set_content(String::from("Test 2")).await.unwrap();
-    let buf3 = ClientBuffer::build(0, 0).await.unwrap();
+    buf1.center().await;
+    let buf3 = ClientBuffer::build(0, true).await.unwrap();
     buf3.set_content(String::from("Test 3")).await.unwrap();
+    drop(buf1);
+    drop(buf2);
     terminal::disable_raw_mode()?;
     Ok(())
 }
 
-use neoxide::core::logger::LOGFILE_PATH;
+use neoxide::core::logger::{log, LogLevel, LOGFILE_PATH};
+use neoxide::core::render::manager::bench;
+
+async fn benchmark(rounds: u32) {
+    let mut sum: Duration = Default::default();
+    let rounds = 100;
+    for i in 0..rounds {
+        log(LogLevel::Debug, format!("round {}", i + 1).as_str()).await;
+        sum.add_assign(bench(10).await);
+    }
+    println!("Total time: {:.3?}", sum);
+    println!("Avg time per round: {:.3?}", sum.div_f64(rounds.into()));
+}
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let _ = Command::new("rm").arg(LOGFILE_PATH).output();
+    // bench(10).await;
     demo_render().await.unwrap();
-    loop {}
+    // let mut stdin = stdin();
+    // let _ = stdin.read(&mut [0u8]).unwrap();
     Ok(())
 }
