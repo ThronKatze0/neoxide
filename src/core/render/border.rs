@@ -2,8 +2,8 @@ use super::manager::{Buffer, BufferBorder, RenderBuffer};
 use std::cmp::min;
 use std::fmt::Display;
 // TODO: change to unicode
-pub const HBORDER: &str = "-";
-pub const VBORDER: char = '|';
+pub const HBORDER: &str = "─";
+pub const VBORDER: char = '│';
 pub const _DOUBLE_LINEAR_BORDER: char = '=';
 pub const CORNER: char = '+';
 pub const PADDING: &str = " ";
@@ -194,10 +194,9 @@ impl Buffer {
                 while i < content.len() {
                     let end_idx = if let Some(newline_idx) = content[i..].find('\n') {
                         skip_newline = true;
-                        newline_idx
+                        i + newline_idx
                     } else {
-                        let end_slice = min(i + width_without_border as usize, content.len());
-                        end_slice
+                        min(i + width_without_border as usize, content.len())
                     };
                     params.line = &content[i..end_idx];
                     write_line_with_padding(render_buf, &mut params).await;
