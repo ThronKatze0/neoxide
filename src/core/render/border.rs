@@ -100,9 +100,11 @@ async fn write_line_with_padding(render_buf: &mut RenderBuffer, params: &mut Wri
     write_str(render_buf, params).await;
 
     write_padding(render_buf, params, params.border.rpad).await;
-    let rest_space = params.width_without_border
-        - (params.offx - params.orig_offx - if params.borders_shown[0] { 1 } else { 0 }) as u16;
-    write_padding(render_buf, params, rest_space).await;
+    let rest_space = params.width_without_border as i16
+        - (params.offx - params.orig_offx - if params.borders_shown[0] { 1 } else { 0 }) as i16;
+    if rest_space > 0 {
+        write_padding(render_buf, params, rest_space as u16).await;
+    }
 
     write_border(render_buf, params, 3).await;
     params.offy += 1;
@@ -196,8 +198,12 @@ impl Buffer {
                         skip_newline = true;
                         i + newline_idx
                     } else {
-                        min(i + width_without_border as usize, content.len())
+                        content.len()
                     };
+                    let end_idx = min(i + width_without_border as usize, end_idx);
+                    if end_idx == i + width_without_border as usize {
+                        skip_newline = false;
+                    }
                     params.line = &content[i..end_idx];
                     write_line_with_padding(render_buf, &mut params).await;
                     i += end_idx;
