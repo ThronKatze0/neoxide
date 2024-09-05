@@ -1,18 +1,19 @@
-mod motions;
+pub mod motions;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct CursorPosition {
-    x: u32,
-    y: u32,
+    pub x: u32,
+    pub y: u32,
 }
 
+#[derive(Clone)]
 pub struct Buffer {
-    content: Vec<String>,
-    cursor_position: CursorPosition,
+    pub content: Vec<String>,
+    pub cursor_position: CursorPosition,
 }
 
 impl Buffer {
-    async fn new(content: Vec<String>, cursor_position: CursorPosition) -> Buffer {
+    pub async fn new(content: Vec<String>, cursor_position: CursorPosition) -> Buffer {
         Buffer {
             content,
             cursor_position,
