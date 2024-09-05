@@ -1,9 +1,9 @@
+use crate::core::editor::{Buffer as MotionBuffer, CursorPosition};
 use crate::core::event_handling::{EventCallback, EventHandler};
 use crate::core::logger::{self, LogLevel};
 
 use super::border::{PrintBorder, CORNER, HBORDER, VBORDER};
 use async_trait::async_trait;
-use crossterm::cursor::MoveTo;
 use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::{queue, terminal, QueueableCommand};
@@ -11,11 +11,14 @@ use downcast_rs::{impl_downcast, DowncastSync};
 use futures::executor::block_on;
 use once_cell::sync::Lazy;
 use std::io::{stdout, Write};
+use std::ops::Range;
 use std::sync::Arc;
 use std::{collections::HashMap, fmt::Display};
 use strum_macros::EnumCount;
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+// NOTE: putting one big lock on the entire buffer manager could hurt performance, look into making
+// one lock per layer instead
 static BUFMAN_GLOB: Lazy<RwLock<BufferManager>> = Lazy::new(|| RwLock::new(BufferManager::new()));
 static RENDER_EVH: Lazy<EventHandler<Event, EventData>> = Lazy::new(|| {
     let evh = EventHandler::new();
@@ -47,19 +50,114 @@ unsafe impl Sync for Event {}
 unsafe impl Sync for EventData {}
 async fn set_resize_events() {}
 
-type BufferId = u32; // NOTE: just don't create 2^32-1 buffers on one layer
-pub struct ClientBuffer {
+#[derive(Clone)]
+struct BufferRef {
     layer: u8,
     id: BufferId,
+}
+
+type BufferId = u32; // NOTE: just don't create 2^32-1 buffers on one layer
+pub struct ClientBuffer {
+    bufman_ref: BufferRef,
+    motion_stuff: MotionBuffer,
 }
 
 const CLIENTBUF_ID_ERR: &str =
     "BUG: ClientBuffer ({id}) has an invalid ID! Tried to access on layer {layer}";
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum ColorValue {
+    Red,
+    Green,
+    Blue,
+    Custom(u8, u8, u8),
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum ANSICode {
+    SetCursor(u16, u16),
+    Reset,
+    Color(bool, ColorValue),
+}
+
+const CSI: &str = "\x1B[";
+
+impl ANSICode {
+    fn reset() -> Self {
+        ANSICode::Reset
+    }
+    pub fn color(foreground: bool, (r, g, b): (u8, u8, u8)) -> Self {
+        ANSICode::Color(foreground, ColorValue::Custom(r, g, b))
+    }
+    pub fn fcustom(r: u8, g: u8, b: u8) -> Self {
+        Self::color(true, (r, g, b))
+    }
+    fn conv(&self) -> String {
+        let mut ret = String::with_capacity(4);
+        ret.push_str(CSI);
+        match self {
+            ANSICode::Reset => ret.push_str("0m"),
+            ANSICode::SetCursor(x, y) => ret.push_str(format!("{};{}H", x + 1, y + 1).as_str()),
+            ANSICode::Color(foreground, color) => {
+                ret.push(if *foreground { '3' } else { '4' });
+                ret.push_str("8;2;");
+                match color {
+                    ColorValue::Red => ret.push_str("255;0;0"),
+                    ColorValue::Green => ret.push_str("0;255;0"),
+                    ColorValue::Blue => ret.push_str("0;0;255"),
+                    ColorValue::Custom(r, g, b) => ret.push_str(format!("{r};{g};{b}").as_str()),
+                    _ => todo!(),
+                }
+                ret.push('m');
+            }
+        }
+        ret
+    }
+}
+impl Display for ANSICode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.conv())
+    }
+}
+
 impl ClientBuffer {
-    pub async fn set_content(&self, content: String) -> Result<(), String> {
+    pub async fn focus(&self) -> Result<(), &str> {
+        BUFMAN_GLOB
+            .write()
+            .await
+            .change_focus(self.bufman_ref.clone())
+            .await?;
+        Ok(())
+    }
+    fn bufman_ref(&self) -> BufferRef {
+        self.bufman_ref.clone()
+    }
+    fn id(&self) -> BufferId {
+        self.bufman_ref.id
+    }
+    fn layer(&self) -> u8 {
+        self.bufman_ref.layer
+    }
+
+    pub async fn set_color(&mut self, range: Range<usize>, color: ANSICode) {
         let mut handle = BUFMAN_GLOB.write().await;
-        let buf = handle.get_buf_mut(self.layer, self.id)?;
+
+        let buf = handle.get_buf_mut(self.layer(), self.id()).expect(
+            format!(
+                "Childless client buffer(layer={}, id={})!",
+                self.layer(),
+                self.id()
+            )
+            .as_str(),
+        );
+        buf.ctrl_codes.push((color, range.start));
+        buf.ctrl_codes.push((ANSICode::reset(), range.end));
+    }
+    pub async fn set_content(&mut self, content: String) -> Result<(), String> {
+        self.motion_stuff.content = content.lines().map(|str| str.to_string()).collect();
+        let mut handle = BUFMAN_GLOB.write().await;
+        let BufferRef { layer, id } = self.bufman_ref;
+        let buf = handle.get_buf_mut(layer, id)?;
         buf.content = content;
         logger::log(LogLevel::Normal, "start rerendering").await;
         if let Err(err) = handle.rerender().await {
@@ -79,7 +177,11 @@ impl ClientBuffer {
             if !handle.layers[*layer].is_full() {
                 let layer = *layer as u8;
                 let id = handle.add_new_buf(layer, id).await?;
-                return Ok(ClientBuffer { layer, id });
+                return Ok(ClientBuffer {
+                    bufman_ref: BufferRef { layer, id },
+                    motion_stuff: MotionBuffer::new(Vec::new(), CursorPosition { x: 0, y: 0 })
+                        .await,
+                });
             }
         }
         Err("all layers full!".to_string())
@@ -94,34 +196,28 @@ impl ClientBuffer {
 
     pub async fn move_to_layer(&mut self, layer: u8) -> Result<(), String> {
         let mut handle = BUFMAN_GLOB.write().await;
-        self.layer = layer;
         let buf = handle
-            .rem_buf(layer.into(), self.id)
+            .rem_buf(self.bufman_ref.layer.into(), self.bufman_ref.id)
             .await
             .expect(CLIENTBUF_ID_ERR);
-        if let Err(msg) = handle.add_buf(layer, self.id, buf).await {
+        if let Err(msg) = handle.add_buf(layer, self.bufman_ref.id, buf).await {
             return Err(format!("adding buffer failed: {}", msg));
         }
         Ok(())
     }
 
-    pub async fn get_content(&self) -> Vec<String> {
-        BUFMAN_GLOB
-            .read()
-            .await
-            .get_buf(self.layer, self.id)
-            .expect(format!("Orphaned Client Buffer: {}/{}", self.layer, self.id).as_str())
-            .content
-            .lines()
-            .map(|str| str.to_string())
-            .collect()
+    pub fn cursor_position(&self) -> &CursorPosition {
+        &self.motion_stuff.cursor_position
+    }
+    pub async fn get_content(&self) -> &Vec<String> {
+        &self.motion_stuff.content
     }
 
     pub async fn center(&self) {
         BUFMAN_GLOB
             .write()
             .await
-            .get_buf_mut(self.layer, self.id)
+            .get_buf_mut(self.layer(), self.id())
             .expect("Orphaned Clientbuffer!")
             .center()
     }
@@ -129,8 +225,7 @@ impl ClientBuffer {
 
 impl Drop for ClientBuffer {
     fn drop(&mut self) {
-        let layer = self.layer;
-        let id = self.id;
+        let BufferRef { layer, id } = self.bufman_ref;
         // this is the best i can do for now
         // .blocking_write() crashes the entire program (no wonder, tokio doesn't like it when you
         // block their threads)
@@ -286,6 +381,7 @@ pub struct Buffer {
     width: u16,
     height: u16,
     border: Option<BufferBorder>,
+    ctrl_codes: Vec<(ANSICode, usize)>,
     content: String,
 }
 
@@ -297,8 +393,12 @@ impl Buffer {
             width,
             height,
             border: Some(BufferBorder::default()),
+            ctrl_codes: Vec::new(),
             content: String::new(),
         }
+    }
+    pub fn ctrl_codes(&self) -> std::slice::Iter<(ANSICode, usize)> {
+        self.ctrl_codes.iter()
     }
     pub fn border(&self) -> Option<&BufferBorder> {
         self.border.as_ref()
@@ -308,6 +408,15 @@ impl Buffer {
     }
     pub fn offsets(&self) -> (u16, u16) {
         (self.offx, self.offy)
+    }
+    pub fn get_start_of_text(&self) -> (u16, u16) {
+        let mut x = self.offx;
+        let mut y = self.offy;
+        if let Some(b) = self.border.as_ref() {
+            x += b.lpad + if b.border_shown >> 3 & 1 > 0 { 1 } else { 0 };
+            y += b.tpad + if b.border_shown >> 2 & 1 > 0 { 1 } else { 0 };
+        }
+        (x, y)
     }
 
     fn default() -> Self {
@@ -388,15 +497,28 @@ const GAP_CHAR: char = '@';
 #[derive(Debug)]
 pub struct RenderBuffer {
     data: Vec<char>, // is there something faster than this?
+    init_ctrl_codes: Vec<ANSICode>,
+    last_ctrl_codes: Vec<ANSICode>,
+    ctrl_codes: Vec<(ANSICode, usize)>,
     write_locks: Vec<u32>,
 }
 
+use crossterm::execute;
 impl RenderBuffer {
+    const INIT_CODES_CAP: usize = 0;
+    const LAST_CODES_CAP: usize = 1;
     fn new(term_width: u16, term_height: u16) -> Self {
         let chars_cap = (term_width * term_height) as usize;
         let data = vec![GAP_CHAR; chars_cap];
         let write_locks = vec![0; chars_cap / BITS_PER_EL + 1];
-        RenderBuffer { data, write_locks }
+        let ctrl_codes = Vec::with_capacity(chars_cap); // worst case
+        RenderBuffer {
+            data,
+            init_ctrl_codes: Vec::with_capacity(RenderBuffer::INIT_CODES_CAP),
+            last_ctrl_codes: Vec::with_capacity(RenderBuffer::LAST_CODES_CAP),
+            ctrl_codes,
+            write_locks,
+        }
     }
 
     fn find_nearest_smaller_pow2(val: u32) -> u32 {
@@ -415,6 +537,7 @@ impl RenderBuffer {
     }
 
     fn clear(&mut self) {
+        // execute!(stdout(), Clear(ClearType::All)).unwrap();
         self.write_locks.fill(0);
     }
     fn fill_rest(&mut self) {
@@ -429,9 +552,6 @@ impl RenderBuffer {
                 chunk ^= off;
                 let off = (off as f32).log2();
                 assert!(off % 1. == 0.);
-                // dbg!(format!("{:b}", chunk));
-                // dbg!(off);
-                // dbg!(i);
                 self.data[i * BITS_PER_EL + off as usize] = GAP_CHAR;
             }
         }
@@ -450,10 +570,25 @@ impl RenderBuffer {
             false
         }
     }
+    pub fn add_last_ctrl_code(&mut self, code: ANSICode) {
+        self.last_ctrl_codes.push(code);
+    }
+    pub fn add_init_ctrl_code(&mut self, code: ANSICode) {
+        self.init_ctrl_codes.push(code);
+    }
+    pub async fn add_ctrl_code(&mut self, code: ANSICode, x: usize, y: usize, term_width: u16) {
+        self.add_ctrl_code_single_idx((code, RenderBuffer::conv_idx(x, y, term_width)))
+            .await;
+    }
+    pub async fn add_ctrl_code_single_idx(&mut self, code: (ANSICode, usize)) {
+        if self.write_locks[code.1 / BITS_PER_EL] >> (code.1 % BITS_PER_EL) & 1 == 0 {
+            logger::log(LogLevel::Debug, "Success").await;
+            self.ctrl_codes.push(code);
+        }
+    }
     pub async fn write(&mut self, x: usize, y: usize, term_width: u16, char: char) {
         let idx = RenderBuffer::conv_idx(x, y, term_width);
         if self.check_lock(idx) {
-            // eprintln!("{idx} = {:b}", self.write_locks[idx / BITS_PER_EL]);
             self.data[idx] = char;
         }
     }
@@ -464,16 +599,50 @@ impl RenderBuffer {
                 self.data[idx] = char;
             }
             idx += 1;
-            // should have already happened
         }
     }
 
-    // technically flushes a buffer
-    fn flush(&mut self) -> std::io::Result<()> {
+    // flushes a buffer
+    async fn flush(&mut self) -> std::io::Result<()> {
         self.fill_rest();
-        queue!(stdout(), Clear(ClearType::All), MoveTo(0, 0))?;
-        self.data.iter().try_for_each(|c| {
-            stdout().queue(Print(c))?;
+        queue!(stdout(), Clear(ClearType::All)).unwrap();
+        self.init_ctrl_codes.iter().try_for_each(|code| {
+            stdout().queue(Print(code.conv()))?;
+            Ok::<(), std::io::Error>(())
+        })?;
+        if self.ctrl_codes.len() > 0 {
+            self.ctrl_codes.sort_by(|(_, i), (_, j)| j.cmp(i));
+            logger::log(
+                LogLevel::Debug,
+                format!("Control codes: {:?}", self.ctrl_codes).as_str(),
+            )
+            .await;
+            let mut next_code = self.ctrl_codes.pop();
+            let mut next_idx = match next_code {
+                Some((_, idx)) => idx as isize,
+                None => -1,
+            };
+            self.data.iter().enumerate().try_for_each(|(i, c)| {
+                if next_idx == i as isize {
+                    let code = next_code.unwrap().0;
+                    stdout().queue(Print(code))?;
+                    next_code = self.ctrl_codes.pop();
+                    next_idx = match next_code {
+                        Some((_, idx)) => idx as isize,
+                        None => -1,
+                    };
+                }
+                stdout().queue(Print(c))?;
+                Ok::<(), std::io::Error>(())
+            })?;
+        } else {
+            self.data.iter().try_for_each(|c| {
+                stdout().queue(Print(c))?;
+                Ok::<(), std::io::Error>(())
+            })?;
+        }
+        self.last_ctrl_codes.iter().try_for_each(|code| {
+            stdout().queue(Print(code.conv()))?;
             Ok::<(), std::io::Error>(())
         })?;
         stdout().flush()?;
@@ -534,41 +703,42 @@ async fn render_internal_faster(
     render_buf: &mut RenderBuffer,
 ) {
     let (term_width, term_height) = terminal::size().unwrap();
-    eprintln!("width = {term_width} height = {term_height}");
+    // eprintln!("width = {term_width} height = {term_height}");
     // TODO: make this faster
     for buf in buffers {
-        logger::log(LogLevel::Debug, format!("{:?}", buf).as_str()).await;
+        // logger::log(LogLevel::Debug, format!("{:?}", buf).as_str()).await;
         buf.render(term_width, render_buf).await;
     }
 }
-async fn render_internal(
-    buffers: impl Iterator<Item = &Buffer> + Send,
-    render_buf: &mut RenderBuffer,
-) {
-    let (term_width, term_height) = terminal::size().unwrap();
-    eprintln!("width = {term_width} height = {term_height}");
-    // TODO: make this faster
-    for buf in buffers {
-        logger::log(LogLevel::Debug, format!("{:?}", buf).as_str()).await;
-        let string =
-            buf.to_string_border_full_with_struct(buf.width, buf.height, buf.border.as_ref());
-        assert_eq!(string.len(), ((buf.width + 1) * buf.height) as usize);
-        for (i, line) in string.lines().enumerate() {
-            render_buf
-                .write_str(buf.offx as usize, buf.offy as usize + i, term_width, line)
-                .await;
-        }
-    }
-}
+// async fn render_internal(
+//     buffers: impl Iterator<Item = &Buffer> + Send,
+//     render_buf: &mut RenderBuffer,
+// ) {
+//     let (term_width, term_height) = terminal::size().unwrap();
+//     // eprintln!("width = {term_width} height = {term_height}");
+//     // TODO: make this faster
+//     for buf in buffers {
+//         logger::log(LogLevel::Debug, format!("{:?}", buf).as_str()).await;
+//         let string =
+//             buf.to_string_border_full_with_struct(buf.width, buf.height, buf.border.as_ref());
+//         assert_eq!(string.len(), ((buf.width + 1) * buf.height) as usize);
+//         for (i, line) in string.lines().enumerate() {
+//             render_buf
+//                 .write_str(buf.offx as usize, buf.offy as usize + i, term_width, line)
+//                 .await;
+//         }
+//     }
+// }
 
 #[async_trait]
 trait Layout: DowncastSync {
     async fn render(&mut self, render_buf: &mut RenderBuffer);
     async fn add_buf(&mut self, name: BufferId, buf: Buffer) -> Result<BufferId, &str>;
-    async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &str>; // now this should never be
-    fn get_buf(&self, name: BufferId) -> Result<&Buffer, &str>;
+    async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &'static str>; // now this should never be
+    fn get_buf(&self, name: BufferId) -> Result<&Buffer, &'static str>;
     fn get_buf_mut(&mut self, name: BufferId) -> Result<&mut Buffer, &str>;
     fn is_full(&self) -> bool;
+    fn get_next_focused(&self) -> Option<BufferId>;
 }
 impl_downcast!(sync Layout);
 
@@ -580,6 +750,7 @@ struct BufferManager {
     tiled_layouts: Vec<usize>,
     free_layouts: Vec<usize>,
     layers: Vec<Box<dyn Layout>>,
+    focused: Option<BufferRef>,
     term_width: u16,
     term_height: u16,
 }
@@ -605,6 +776,7 @@ impl BufferManager {
             tiled_layouts: vec![0],   // TODO: not final
             free_layouts: Vec::new(), // TODO: not final
             layers,
+            focused: None,
             term_width,
             term_height,
         }
@@ -618,7 +790,7 @@ impl BufferManager {
             self.layers[i].render(&mut self.render_buf).await;
         }
         logger::log(LogLevel::Normal, "finish rendering layers").await;
-        self.render_buf.flush()?;
+        self.render_buf.flush().await?;
         logger::log(LogLevel::Normal, "finish rerendering").await;
         Ok(())
     }
@@ -636,6 +808,7 @@ impl BufferManager {
         self.layers.push(layout);
     }
 
+    // TODO: make it so, that you can optionally switch focus on buffer add
     async fn add_new_buf(&mut self, layer: u8, id: BufferId) -> Result<BufferId, &str> {
         self.add_buf(layer, id, Buffer::default()).await
     }
@@ -645,19 +818,55 @@ impl BufferManager {
             // error handling is now a thing
             return Err("Overflow!");
         }
-        self.layers[layer].add_buf(id, buf).await
+        let res = self.layers[layer].add_buf(id, buf).await;
+        // if let Ok(id) = res {
+        //     self.focused = Some(self.layers[layer].get_buf(id).unwrap());
+        // }
+        res
     }
 
     async fn rem_buf(&mut self, layer: usize, id: BufferId) -> Result<Buffer, &str> {
-        // TODO: make error handling a thing
-        self.layers[layer].rem_buf(id).await
+        let layer = layer as usize;
+        if layer >= self.layers.len() {
+            // error handling is now a thing
+            return Err("Overflow!");
+        }
+        let res = self.layers[layer].rem_buf(id).await;
+        if res.is_ok() {
+            match self.layers[layer].get_next_focused() {
+                Some(id) => {
+                    self.focused = Some(BufferRef {
+                        layer: layer as u8,
+                        id,
+                    })
+                }
+                None => {}
+            }
+        }
+        res
     }
 
-    fn get_buf(&self, layer: u8, id: BufferId) -> Result<&Buffer, &str> {
+    async fn change_focus(&mut self, bufman_ref: BufferRef) -> Result<(), &'static str> {
+        let buf = self.get_buf(bufman_ref.layer, bufman_ref.id)?;
+        let (x, y) = buf.get_start_of_text();
+        self.focused = Some(bufman_ref);
+        self.render_buf
+            .add_last_ctrl_code(ANSICode::SetCursor(x, y));
+        Ok(())
+    }
+
+    fn get_buf(&self, layer: u8, id: BufferId) -> Result<&Buffer, &'static str> {
         self.layers[layer as usize].get_buf(id)
     }
     fn get_buf_mut(&mut self, layer: u8, id: BufferId) -> Result<&mut Buffer, &str> {
         self.layers[layer as usize].get_buf_mut(id)
+    }
+
+    fn get_focused(&self) -> Result<&Buffer, &'static str> {
+        if let Some(BufferRef { layer, id }) = self.focused {
+            return self.get_buf(layer, id);
+        }
+        Err("no focused buffer")
     }
 
     async fn resize(&mut self) -> std::io::Result<()> {
@@ -682,7 +891,7 @@ pub async fn bench(buffers: usize) -> Duration {
         let buf = buf.unwrap();
         buffer_vec.push(buf);
         let _ = buffer_vec
-            .last()
+            .last_mut()
             .unwrap()
             .set_content("test".to_string())
             .await;

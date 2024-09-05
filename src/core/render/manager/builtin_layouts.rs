@@ -1,5 +1,4 @@
 use super::*;
-use crate::core::render::manager::render_internal;
 struct FloatingLayout {
     buffers: HashMap<BufferId, Buffer>,
 }
@@ -19,8 +18,8 @@ trait MasterLayoutClientAPI {
 
 impl MasterLayoutClientAPI for ClientBuffer {
     async fn make_master(&self) -> Result<(), &str> {
-        match bufman_write().await.layers[self.layer as usize].downcast_mut::<MasterLayout>() {
-            Some(masterl) => masterl.change_master(self.id),
+        match bufman_write().await.layers[self.layer() as usize].downcast_mut::<MasterLayout>() {
+            Some(masterl) => masterl.change_master(self.id()),
             None => Err("Layer is not a MasterLayout"),
         }
     }
@@ -114,7 +113,7 @@ impl MasterLayout {
 
 #[async_trait]
 impl Layout for MasterLayout {
-    fn get_buf(&self, name: BufferId) -> Result<&Buffer, &str> {
+    fn get_buf(&self, name: BufferId) -> Result<&Buffer, &'static str> {
         if self.master_id == name {
             return Ok(self.master.as_ref().unwrap());
         }
@@ -154,7 +153,7 @@ impl Layout for MasterLayout {
         self.reorder().await;
         return Ok(name);
     }
-    async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &str> {
+    async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &'static str> {
         let mut reorder = true;
         let res = if self.master_id == name {
             let new_master_id = self.buffers.keys().next();
@@ -188,5 +187,12 @@ impl Layout for MasterLayout {
     }
     fn is_full(&self) -> bool {
         (self.buffers.len() + (if self.master.is_some() { 1 } else { 0 })) >= 11
+    }
+
+    fn get_next_focused(&self) -> Option<BufferId> {
+        match self.master.as_ref() {
+            Some(_) => Some(self.master_id),
+            None => None,
+        }
     }
 }
