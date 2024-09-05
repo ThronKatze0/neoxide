@@ -11,3 +11,5 @@ pub mod render;
 pub mod lib;
 
 pub mod io;
+
+pub mod input;
