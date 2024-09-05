@@ -9,6 +9,7 @@ use super::{
     logger::{self, LogLevel},
     render::ClientBuffer,
 };
+use std::io::Result;
 
 pub async fn read(reader: impl AsyncReadExt, start_size: usize) -> std::io::Result<String> {
     let mut ret = String::with_capacity(start_size);
@@ -49,12 +50,30 @@ pub async fn open_file(file_name: &str) -> std::io::Result<ClientBuffer> {
         // this is life now
         c = ClientBuffer::build_on_tiled(2).await;
     }
-    let c = c.unwrap();
+    let mut c = c.unwrap();
     if let Err(msg) = c.set_content(read_file(file_name).await?).await {
         logger::log(LogLevel::Error, &msg).await;
         return Err(std::io::ErrorKind::Other.into());
     }
     Ok(c)
+}
+
+pub struct OpenFileBuffer {
+    cl: ClientBuffer,
+    file_handle: File,
+}
+
+impl OpenFileBuffer {
+    async fn open_file(file_name: &str) -> Result<Self> {
+        let file_handle = File::options().write(true).open(file_name).await?;
+        let mut c = ClientBuffer::build_on_tiled(2).await;
+        while let Err(_) = c {
+            // this is life now
+            c = ClientBuffer::build_on_tiled(2).await;
+        }
+        let cl = c.unwrap();
+        Ok(OpenFileBuffer { cl, file_handle })
+    }
 }
 
 // pub async fn write<T>(writer: impl AsyncWriteExt, buf: impl Buf) -> std::io::Result<()> {
