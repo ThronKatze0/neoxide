@@ -10,6 +10,8 @@ use strum_macros::EnumCount as EnumCountMacro;
 use tokio;
 use tokio::sync::Mutex;
 
+use super::logger::{self, LogLevel};
+
 #[derive(Clone, Copy, PartialEq, Hash, EnumCountMacro)]
 #[repr(u8)]
 enum DemoEvent {
@@ -55,7 +57,7 @@ impl<E, D> EventCallback<E, D> {
 
 pub struct EventHandler<E, D>
 where
-    E: EnumCount + Clone + Copy + Send,
+    E: EnumCount + Clone + Send,
     D: Send,
 {
     subscriptions: Mutex<Vec<HashMap<u32, EventCallback<E, D>>>>,
@@ -63,7 +65,7 @@ where
 
 impl<E, D> EventHandler<E, D>
 where
-    E: EnumCount + Clone + Copy + Send + 'static,
+    E: EnumCount + Clone + Send + 'static,
     D: Send + 'static,
 {
     pub fn new() -> EventHandler<E, D> {
@@ -82,7 +84,8 @@ where
     /// returns: randomly generated id which can be used to remove the callback in the future
     pub async fn subscribe(&self, event_callback: EventCallback<E, D>) -> u32 {
         let mut lock = self.subscriptions.lock().await;
-        let enum_idx = get_enum_position(event_callback.event).await;
+        let enum_idx = get_enum_position(event_callback.event.clone()).await;
+        logger::log(LogLevel::Debug, format!("Enum pos is {enum_idx}").as_str()).await;
         let callback_map = lock
             .get_mut(enum_idx as usize)
             .expect(&format!("unsafe code not so good (sub;{enum_idx})"));
@@ -102,12 +105,18 @@ where
     where
         E: Send + 'static,
     {
+        logger::log(LogLevel::Debug, format!("Dispatch before log").as_str()).await;
         let lock = self.subscriptions.lock().await;
         // let data = Arc::new(Mutex::new(data));
         let callback_map = lock
             .get(get_enum_position(event).await as usize)
             .expect("unsafe code not so good (dispatch)");
         // I think the rustaceans consider this to be more idiomatic
+        logger::log(
+            LogLevel::Debug,
+            format!("Starting to execute callbacks").as_str(),
+        )
+        .await;
         let futs: Vec<_> = callback_map
             .into_iter()
             .map(|(_, event_callback)| {
