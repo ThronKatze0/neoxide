@@ -18,7 +18,11 @@ trait MasterLayoutClientAPI {
 
 impl MasterLayoutClientAPI for ClientBuffer {
     async fn make_master(&self) -> Result<(), &str> {
-        match bufman_write().await.layers[self.layer() as usize].downcast_mut::<MasterLayout>() {
+        match bufman_read().await.layers[self.layer() as usize]
+            .lock()
+            .await
+            .downcast_mut::<MasterLayout>()
+        {
             Some(masterl) => masterl.change_master(self.id()),
             None => Err("Layer is not a MasterLayout"),
         }
@@ -140,7 +144,7 @@ impl Layout for MasterLayout {
         render_internal_faster(buffers.into_iter(), render_buf).await;
     }
 
-    async fn add_buf(&mut self, _name: BufferId, buf: Buffer) -> Result<BufferId, &str> {
+    async fn add_buf(&mut self, _name: BufferId, buf: Buffer) -> Result<BufferId, &'static str> {
         let name = self.get_id();
         if self.master.is_none() {
             self.master = Some(buf);

@@ -1,8 +1,8 @@
 use neoxide::core::editor::motions::{Motion, MotionDirection, UpDownMotion};
 use neoxide::core::event_handling::EventCallback;
-use neoxide::core::{io, logger};
+use neoxide::core::{io, logger, render};
 use std::io::{prelude::*, stdin};
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Deref};
 use std::time::Duration;
 use std::{io::stdout, process::Command};
 use tokio::task::JoinHandle;
@@ -58,7 +58,7 @@ async fn demo_render() -> std::io::Result<()> {
 }
 
 use neoxide::core::logger::{log, LogLevel, LOGFILE_PATH};
-use neoxide::core::render::manager::bench;
+use neoxide::core::render::manager::{bench, update_cursor_pos, ContentRef};
 
 async fn benchmark(rounds: u32) {
     let mut sum: Duration = Default::default();
@@ -75,60 +75,68 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventState, KeyModifiers};
 use neoxide::core::input::{input_loop, subscribe, EvtData, InputConfig, InputEvent};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-// async fn editor_demo() -> JoinHandle<std::io::Result<()>> {
-//     let handle = tokio::spawn(input_loop(InputConfig {
-//         bracketed_paste: false,
-//         focus_change: false,
-//         mouse_capture: false,
-//     }));
-//     let buf = io::open_file("log.neo2").await.unwrap();
-//     subscribe(EventCallback::new(
-//         Arc::new(Box::new(move |evt: Arc<Mutex<_>>| {
-//             let evt = evt.clone();
-//             let buf = buf.clone();
-//             let fut = async move {
-//                 let evt = evt.lock().await;
-//                 if let Event::Key(KeyEvent {
-//                     code,
-//                     modifiers: _,
-//                     kind: _,
-//                     state: _,
-//                 }) = evt.0
-//                 {
-//                     let content = buf.get_content().await;
-//                     if code == KeyCode::Char('j') {
-//                         UpDownMotion.get_new_cursor_position(
-//                             content,
-//                             buf.cursor_position(),
-//                             MotionDirection::Foward,
-//                         );
-//                     }
-//                     logger::log(LogLevel::Debug, format!("Got keycode: {code}").as_str()).await;
-//                 }
-//             };
-//             Box::pin(fut)
-//         })),
-//         true,
-//         InputEvent(Event::Key(KeyEvent::new(
-//             event::KeyCode::Char(' '),
-//             KeyModifiers::empty(),
-//         ))),
-//     ))
-//     .await;
-//     return handle;
-// }
+async fn editor_demo() -> JoinHandle<std::io::Result<()>> {
+    let handle = tokio::spawn(input_loop(InputConfig {
+        bracketed_paste: false,
+        focus_change: false,
+        mouse_capture: false,
+    }));
+    let buf = io::open_file("log.neo2").await.unwrap();
+    let _ = buf.focus().await;
+    subscribe(EventCallback::new(
+        Arc::new(Box::new(move |evt: Arc<Mutex<_>>| {
+            let evt = evt.clone();
+            let fut = async move {
+                let buf = render::manager::focused().await.unwrap();
+                let evt = evt.lock().await;
+                if let Event::Key(KeyEvent {
+                    code,
+                    modifiers: _,
+                    kind: _,
+                    state: _,
+                }) = evt.0
+                {
+                    let dbr = buf.deref().await;
+                    let content = dbr.content();
+                    if code == KeyCode::Char('j') {
+                        let pos = UpDownMotion.get_new_cursor_position(
+                            &content,
+                            &buf.deref().await.cursor_position(),
+                            MotionDirection::Foward,
+                        );
+                        logger::log(
+                            LogLevel::Normal,
+                            format!("New cursor position is {:?}", pos).as_str(),
+                        )
+                        .await;
+                        drop(dbr);
+                        drop(buf);
+                        update_cursor_pos(pos).await;
+                    }
+                    logger::log(LogLevel::Debug, format!("Got keycode: {code}").as_str()).await;
+                }
+            };
+            Box::pin(fut)
+        })),
+        true,
+        InputEvent(Event::Key(KeyEvent::new(
+            event::KeyCode::Char(' '),
+            KeyModifiers::empty(),
+        ))),
+    ))
+    .await;
+    return handle;
+}
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let _ = Command::new("rm").arg(LOGFILE_PATH).output();
     terminal::enable_raw_mode()?;
-    demo_render().await.unwrap();
+    editor_demo().await;
     terminal::disable_raw_mode()?;
     // let test = editor_demo().await.await??;
-    // bench(10).await;
     // let mut stdin = stdin();
     // let _ = stdin.read(&mut [0u8]).unwrap();
     // let buf = io::open_file("log.neo2").await.unwrap();
-    loop {}
     Ok(())
 }

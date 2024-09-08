@@ -1,7 +1,7 @@
 use crate::core::editor::{Buffer as MotionBuffer, CursorPosition};
 use crate::core::event_handling::{EventCallback, EventHandler};
 use crate::core::logger::{self, LogLevel};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use super::border::{PrintBorder, CORNER, HBORDER, VBORDER};
 use async_trait::async_trait;
@@ -17,7 +17,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::{collections::HashMap, fmt::Display};
 use strum_macros::EnumCount;
-use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // NOTE: putting one big lock on the entire buffer manager could hurt performance, look into making
 // one lock per layer instead
@@ -26,7 +26,7 @@ static RENDER_EVH: Lazy<EventHandler<Event, EventData>> = Lazy::new(|| {
     let evh = EventHandler::new();
     let callback: EventCallback<Event, _> = EventCallback::new(
         Arc::new(Box::new(|_: Arc<Mutex<_>>| {
-            let fut = async { bufman_write().await.resize().await.unwrap() };
+            let fut = async { bufman_read().await.resize().await.unwrap() };
             Box::pin(fut)
         })),
         true,
@@ -50,29 +50,61 @@ pub async fn dispatch_resize() {
         .await;
 }
 
-pub struct FocusedBuffer<'a>(RwLockReadGuard<'a, BufferManager>);
-impl<'a> Deref for FocusedBuffer<'a> {
+pub struct DirectBufferReference<'a>(MutexGuard<'a, Box<dyn Layout>>, BufferRef);
+pub trait ContentRef {
+    fn content(&self) -> &Vec<String>;
+}
+
+impl<'a> ContentRef for DirectBufferReference<'a> {
+    fn content(&self) -> &Vec<String> {
+        &self.content
+    }
+}
+impl<'a> Deref for DirectBufferReference<'a> {
     type Target = Buffer;
     fn deref(&self) -> &Self::Target {
         self.0
-            .get_focused()
+            .get_buf(self.1.id)
             .expect("FocusedBuffer has no associated buffer struct! This should never happen!")
     }
 }
+impl<'a> DerefMut for DirectBufferReference<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.get_buf_mut(self.1.id).unwrap()
+    }
+}
 
-pub async fn focused<'a>() -> Result<FocusedBuffer<'a>, &'static str> {
+pub struct PublicBufferReference<'a>(RwLockReadGuard<'a, BufferManager>, BufferRef);
+impl<'a> PublicBufferReference<'a> {
+    pub async fn deref(&self) -> DirectBufferReference {
+        self.0
+            .get_buf(self.1.layer, self.1.id)
+            .await
+            .expect("Orphaned Buffer Reference!")
+    }
+}
+
+pub async fn focused<'a>() -> Result<PublicBufferReference<'a>, &'static str> {
     let handle = bufman_read().await;
     if handle.focused.is_none() {
         return Err("no focus");
     }
-    Ok(FocusedBuffer(handle))
+    let buf_ref = handle.focused.clone().unwrap();
+    Ok(PublicBufferReference(handle, buf_ref))
+    // handle.get_buf(buf_ref.layer, buf_ref.id).await
+    // let lock = handle.layers[buf_ref.layer.clone() as usize].lock().await;
+    // Ok(DirectBufferReference(lock, buf_ref))
 }
 
 pub async fn update_cursor_pos(new_pos: CursorPosition) {
     let res = {
         match bufman_read().await.focused.clone() {
-            Some(buf_ref) => match bufman_write().await.get_buf_mut(buf_ref.layer, buf_ref.id) {
-                Ok(buf) => {
+            Some(buf_ref) => match bufman_read()
+                .await
+                .get_buf_mut(buf_ref.layer, buf_ref.id)
+                .await
+            {
+                Ok(mut buf) => {
                     buf.cursor_pos = new_pos;
                     match set_cursor(new_pos.x as u16, new_pos.y as u16) {
                         Ok(_) => Ok(()),
@@ -193,9 +225,9 @@ impl ClientBuffer {
     }
 
     pub async fn set_color(&mut self, range: Range<usize>, color: ANSICode) {
-        let mut handle = bufman_write().await;
+        let handle = bufman_read().await;
 
-        let buf = handle.get_buf_mut(self.layer(), self.id()).expect(
+        let mut buf = handle.get_buf_mut(self.layer(), self.id()).await.expect(
             format!(
                 "Childless client buffer(layer={}, id={})!",
                 self.layer(),
@@ -207,13 +239,11 @@ impl ClientBuffer {
         buf.ctrl_codes.push((ANSICode::reset(), range.end));
     }
     pub async fn set_content(&mut self, content: String) -> Result<(), String> {
-        // TODO: We currently have two copies of the buffer content, one big String and one lines
-        // Vec. Rewrite Buffer, so everything can rely on the lines Vec.
-        self.motion_stuff.content = content.lines().map(|str| str.to_string()).collect();
-        let mut handle = bufman_write().await;
+        let handle = bufman_read().await;
         let BufferRef { layer, id } = self.bufman_ref;
-        let buf = handle.get_buf_mut(layer, id)?;
-        buf.content = content;
+        let mut buf = handle.get_buf_mut(layer, id).await?;
+        buf.content = content.lines().map(|str| str.to_string()).collect(); // TODO: make better
+        drop(buf);
         logger::log(LogLevel::Normal, "start rerendering").await;
         if let Err(err) = handle.rerender().await {
             return Err(format!("Error when rerendering: {err}"));
@@ -222,16 +252,19 @@ impl ClientBuffer {
         Ok(())
     }
     pub async fn build(id: BufferId, tiled: bool) -> Result<Self, String> {
-        let mut handle = bufman_write().await;
+        let handle = bufman_read().await;
         let vec = if tiled {
             &handle.tiled_layouts
         } else {
             &handle.free_layouts
-        };
-        for layer in vec.iter() {
-            if !handle.layers[*layer].is_full() {
-                let layer = *layer as u8;
+        }
+        .read()
+        .await;
+        for layer in vec.iter().map(|layer| *layer) {
+            if !handle.layers[layer].lock().await.is_full() {
+                let layer = layer as u8;
                 let id = handle.add_new_buf(layer, id).await?;
+                logger::log(LogLevel::Debug, "Buffer created!").await;
                 return Ok(ClientBuffer {
                     bufman_ref: BufferRef { layer, id },
                     motion_stuff: MotionBuffer::new(Vec::new(), CursorPosition { x: 0, y: 0 })
@@ -264,8 +297,8 @@ impl ClientBuffer {
     pub fn cursor_position(&self) -> &CursorPosition {
         &self.motion_stuff.cursor_position
     }
-    pub async fn get_content(&self) -> &Vec<String> {
-        &self.motion_stuff.content
+    pub async fn get_content(&self) -> PublicBufferReference {
+        PublicBufferReference(bufman_read().await, self.bufman_ref.clone())
     }
 
     // BUG: on tiled layouts, this function yields different results, depending on when it is called. Rewrite this to not do that, as well as add more functionality (anchor content to any corner, etc.)
@@ -273,6 +306,7 @@ impl ClientBuffer {
         bufman_write()
             .await
             .get_buf_mut(self.layer(), self.id())
+            .await
             .expect("Orphaned Clientbuffer!")
             .center()
     }
@@ -294,7 +328,7 @@ impl Drop for ClientBuffer {
                 LogLevel::Normal,
                 format!(
                     "Dropping this Internal Buffer (id={id}): {:?}",
-                    bufman_write().await.get_buf(layer, id)
+                    *bufman_read().await.get_buf(layer, id).await.unwrap()
                 )
                 .as_str(),
             )
@@ -434,7 +468,7 @@ pub struct Buffer {
     border: Option<BufferBorder>,
     ctrl_codes: Vec<(ANSICode, usize)>,
     cursor_pos: CursorPosition,
-    content: String,
+    content: Vec<String>,
 }
 
 impl Buffer {
@@ -447,7 +481,7 @@ impl Buffer {
             border: Some(BufferBorder::default()),
             ctrl_codes: Vec::new(),
             cursor_pos: CursorPosition { x: 0, y: 0 },
-            content: String::new(),
+            content: Vec::new(),
         }
     }
     pub fn ctrl_codes(&self) -> std::slice::Iter<(ANSICode, usize)> {
@@ -462,8 +496,8 @@ impl Buffer {
     pub fn offsets(&self) -> (u16, u16) {
         (self.offx, self.offy)
     }
-    pub fn lines(&self) -> impl Iterator<Item = &str> {
-        self.content.lines()
+    pub fn lines(&self) -> impl Iterator<Item = &String> {
+        self.content.iter()
     }
     pub fn set_cursor_pos(&mut self, mut new_pos: CursorPosition) {
         let (offx, offy) = self.get_start_of_text();
@@ -495,16 +529,16 @@ impl Buffer {
             Some(b) => b,
             None => BufferBorder::blank(),
         };
-        border.tpad = (self.height - 1 - self.content.lines().count() as u16) / 2;
+        border.tpad = (self.height - 1 - self.content.len() as u16) / 2;
         border.lpad = (self.width - len as u16) / 2;
         self.border = Some(border);
     }
 
     fn get_auto_width(&self) -> usize {
         self.content
-            .lines()
+            .iter()
             .max_by(|x, y| x.len().cmp(&y.len()))
-            .unwrap_or("")
+            .unwrap_or(&String::new())
             .len()
     }
 
@@ -552,7 +586,9 @@ impl Buffer {
 
 impl Display for Buffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.content)?;
+        for line in self.content.iter() {
+            write!(f, "{}\n", line)?;
+        }
         Ok(())
     }
 }
@@ -770,6 +806,7 @@ async fn render_internal_faster(
 ) {
     let (term_width, term_height) = terminal::size().unwrap();
     // eprintln!("width = {term_width} height = {term_height}");
+    logger::log(LogLevel::Normal, "start rendering buffers...").await;
     // TODO: make this faster
     for buf in buffers {
         // logger::log(LogLevel::Debug, format!("{:?}", buf).as_str()).await;
@@ -799,7 +836,7 @@ async fn render_internal_faster(
 #[async_trait]
 trait Layout: DowncastSync {
     async fn render(&mut self, render_buf: &mut RenderBuffer);
-    async fn add_buf(&mut self, name: BufferId, buf: Buffer) -> Result<BufferId, &str>;
+    async fn add_buf(&mut self, name: BufferId, buf: Buffer) -> Result<BufferId, &'static str>;
     async fn rem_buf(&mut self, name: BufferId) -> Result<Buffer, &'static str>; // now this should never be
     fn get_buf(&self, name: BufferId) -> Result<&Buffer, &'static str>;
     fn get_buf_mut(&mut self, name: BufferId) -> Result<&mut Buffer, &str>;
@@ -812,13 +849,12 @@ mod builtin_layouts;
 use builtin_layouts::MasterLayout;
 
 struct BufferManager {
-    render_buf: RenderBuffer,
-    tiled_layouts: Vec<usize>,
-    free_layouts: Vec<usize>,
-    layers: Vec<Box<dyn Layout>>,
+    render_buf: Mutex<RenderBuffer>,
+    tiled_layouts: RwLock<Vec<usize>>,
+    free_layouts: RwLock<Vec<usize>>,
+    layers: Vec<Mutex<Box<dyn Layout>>>,
     focused: Option<BufferRef>,
-    term_width: u16,
-    term_height: u16,
+    term_size: Mutex<(u16, u16)>, // (width, height)
 }
 
 /// this is completely safe, since the editor should never run without being able to query the
@@ -833,58 +869,63 @@ type DynLayout = Box<dyn Layout + Send + Sync>;
 // handle the lock obtaining stuff, instead of direct method calls
 impl BufferManager {
     fn new() -> BufferManager {
-        let (term_width, term_height) = size();
+        let term_size = size();
         let mut layers = Vec::with_capacity(2);
         let ml: Box<dyn Layout> = Box::new(MasterLayout::new());
-        layers.push(ml);
+        layers.push(Mutex::new(ml));
         BufferManager {
-            render_buf: RenderBuffer::new(term_width, term_height),
-            tiled_layouts: vec![0],   // TODO: not final
-            free_layouts: Vec::new(), // TODO: not final
+            render_buf: Mutex::new(RenderBuffer::new(term_size.0, term_size.1)),
+            tiled_layouts: RwLock::new(vec![0]), // TODO: not final
+            free_layouts: RwLock::new(Vec::new()), // TODO: not final
             layers,
             focused: None,
-            term_width,
-            term_height,
+            term_size: Mutex::new(term_size),
         }
     }
 
-    async fn rerender(&mut self) -> std::io::Result<()> {
-        self.render_buf.clear();
+    async fn rerender(&self) -> std::io::Result<()> {
+        let mut render_buf = self.render_buf.lock().await;
+        render_buf.clear();
         logger::log(LogLevel::Normal, "cleared render_buf bitmap").await;
         for i in self.layers.len() - 1..=0 {
             logger::log(LogLevel::Normal, format!("rendering layer {i}...").as_str()).await;
-            self.layers[i].render(&mut self.render_buf).await;
+            self.layers[i].lock().await.render(&mut render_buf).await;
         }
         logger::log(LogLevel::Normal, "finish rendering layers").await;
-        self.render_buf.flush().await?;
+        render_buf.flush().await?;
         logger::log(LogLevel::Normal, "finish rerendering").await;
         Ok(())
     }
 
-    fn add_tiled_layer(&mut self, layout: DynLayout) {
-        self.tiled_layouts.push(self.layers.len());
+    async fn add_tiled_layer(&mut self, layout: DynLayout) {
+        self.tiled_layouts.write().await.push(self.layers.len());
         self.add_layer(layout);
     }
-    fn add_free_layer(&mut self, layout: DynLayout) {
-        self.free_layouts.push(self.layers.len());
+    async fn add_free_layer(&mut self, layout: DynLayout) {
+        self.free_layouts.write().await.push(self.layers.len());
         self.add_layer(layout);
     }
 
     fn add_layer(&mut self, layout: DynLayout) {
-        self.layers.push(layout);
+        self.layers.push(Mutex::new(layout));
     }
 
     // TODO: make it so, that you can optionally switch focus on buffer add
-    async fn add_new_buf(&mut self, layer: u8, id: BufferId) -> Result<BufferId, &str> {
+    async fn add_new_buf(&self, layer: u8, id: BufferId) -> Result<BufferId, &'static str> {
         self.add_buf(layer, id, Buffer::default()).await
     }
-    async fn add_buf(&mut self, layer: u8, id: BufferId, buf: Buffer) -> Result<BufferId, &str> {
+    async fn add_buf(
+        &self,
+        layer: u8,
+        id: BufferId,
+        buf: Buffer,
+    ) -> Result<BufferId, &'static str> {
         let layer = layer as usize;
         if layer >= self.layers.len() {
             // error handling is now a thing
             return Err("Overflow!");
         }
-        let res = self.layers[layer].add_buf(id, buf).await;
+        let res = self.layers[layer].lock().await.add_buf(id, buf).await;
         // if let Ok(id) = res {
         //     self.focused = Some(self.layers[layer].get_buf(id).unwrap());
         // }
@@ -897,9 +938,9 @@ impl BufferManager {
             // error handling is now a thing
             return Err("Overflow!");
         }
-        let res = self.layers[layer].rem_buf(id).await;
+        let res = self.layers[layer].lock().await.rem_buf(id).await;
         if res.is_ok() {
-            match self.layers[layer].get_next_focused() {
+            match self.layers[layer].lock().await.get_next_focused() {
                 Some(id) => {
                     self.focused = Some(BufferRef {
                         layer: layer as u8,
@@ -913,32 +954,47 @@ impl BufferManager {
     }
 
     async fn change_focus(&mut self, bufman_ref: BufferRef) -> Result<(), &'static str> {
-        let buf = self.get_buf(bufman_ref.layer, bufman_ref.id)?;
+        self.focused = Some(bufman_ref.clone());
+        let buf = self.get_buf(bufman_ref.layer, bufman_ref.id).await?;
         let (x, y) = buf.get_start_of_text();
-        self.focused = Some(bufman_ref);
         self.render_buf
+            .lock()
+            .await
             .add_last_ctrl_code(ANSICode::SetCursor(x, y));
         Ok(())
     }
 
-    fn get_buf(&self, layer: u8, id: BufferId) -> Result<&Buffer, &'static str> {
-        self.layers[layer as usize].get_buf(id)
+    async fn get_buf(
+        &self,
+        layer: u8,
+        id: BufferId,
+    ) -> Result<DirectBufferReference, &'static str> {
+        let lock = self.layers[layer as usize].lock().await;
+        if let Err(err) = lock.get_buf(id) {
+            return Err(err);
+        }
+        Ok(DirectBufferReference(lock, BufferRef { layer, id }))
     }
-    fn get_buf_mut(&mut self, layer: u8, id: BufferId) -> Result<&mut Buffer, &str> {
-        self.layers[layer as usize].get_buf_mut(id)
+    async fn get_buf_mut(&self, layer: u8, id: BufferId) -> Result<DirectBufferReference, &str> {
+        let lock = self.layers[layer as usize].lock().await;
+        if let Err(err) = lock.get_buf(id) {
+            return Err(err);
+        }
+        Ok(DirectBufferReference(lock, BufferRef { layer, id }))
     }
 
-    fn get_focused(&self) -> Result<&Buffer, &'static str> {
+    async fn get_focused(&self) -> Result<DirectBufferReference, &'static str> {
         if let Some(BufferRef { layer, id }) = self.focused {
-            return self.get_buf(layer, id);
+            return self.get_buf(layer, id).await;
         }
         Err("no focused buffer")
     }
 
-    async fn resize(&mut self) -> std::io::Result<()> {
+    async fn resize(&self) -> std::io::Result<()> {
         let (w, h) = terminal::size().unwrap();
-        self.term_width = w;
-        self.term_height = h;
+        let mut lock = self.term_size.lock().await;
+        lock.0 = w;
+        lock.1 = h;
         self.rerender().await
     }
 }
