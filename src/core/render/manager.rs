@@ -1,12 +1,14 @@
 use crate::core::editor::{Buffer as MotionBuffer, CursorPosition};
 use crate::core::event_handling::{EventCallback, EventHandler};
 use crate::core::logger::{self, LogLevel};
+use std::ops::Deref;
 
 use super::border::{PrintBorder, CORNER, HBORDER, VBORDER};
 use async_trait::async_trait;
+use crossterm::cursor::MoveTo;
 use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType};
-use crossterm::{queue, terminal, QueueableCommand};
+use crossterm::{queue, terminal, ExecutableCommand, QueueableCommand};
 use downcast_rs::{impl_downcast, DowncastSync};
 use futures::executor::block_on;
 use once_cell::sync::Lazy;
@@ -24,7 +26,7 @@ static RENDER_EVH: Lazy<EventHandler<Event, EventData>> = Lazy::new(|| {
     let evh = EventHandler::new();
     let callback: EventCallback<Event, _> = EventCallback::new(
         Arc::new(Box::new(|_: Arc<Mutex<_>>| {
-            let fut = async { BUFMAN_GLOB.write().await.resize().await.unwrap() };
+            let fut = async { bufman_write().await.resize().await.unwrap() };
             Box::pin(fut)
         })),
         true,
@@ -33,6 +35,7 @@ static RENDER_EVH: Lazy<EventHandler<Event, EventData>> = Lazy::new(|| {
     block_on(evh.subscribe(callback));
     evh
 });
+
 async fn bufman_read<'a>() -> RwLockReadGuard<'a, BufferManager> {
     BUFMAN_GLOB.read().await
 }
@@ -40,6 +43,60 @@ async fn bufman_write<'a>() -> RwLockWriteGuard<'a, BufferManager> {
     BUFMAN_GLOB.write().await
 }
 unsafe impl Sync for BufferManager {}
+
+pub async fn dispatch_resize() {
+    RENDER_EVH
+        .dispatch(Event::Resize, Arc::new(Mutex::new(EventData)))
+        .await;
+}
+
+pub struct FocusedBuffer<'a>(RwLockReadGuard<'a, BufferManager>);
+impl<'a> Deref for FocusedBuffer<'a> {
+    type Target = Buffer;
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .get_focused()
+            .expect("FocusedBuffer has no associated buffer struct! This should never happen!")
+    }
+}
+
+pub async fn focused<'a>() -> Result<FocusedBuffer<'a>, &'static str> {
+    let handle = bufman_read().await;
+    if handle.focused.is_none() {
+        return Err("no focus");
+    }
+    Ok(FocusedBuffer(handle))
+}
+
+pub async fn update_cursor_pos(new_pos: CursorPosition) {
+    let res = {
+        match bufman_read().await.focused.clone() {
+            Some(buf_ref) => match bufman_write().await.get_buf_mut(buf_ref.layer, buf_ref.id) {
+                Ok(buf) => {
+                    buf.cursor_pos = new_pos;
+                    match set_cursor(new_pos.x as u16, new_pos.y as u16) {
+                        Ok(_) => Ok(()),
+                        Err(err) => Err(err.to_string()),
+                    }
+                }
+                Err(msg) => Err(format!("error updating values: {msg}")),
+            },
+            None => Err("no focus".to_string()),
+        }
+    };
+    if let Err(msg) = res {
+        logger::log(
+            LogLevel::Error,
+            format!("Failed to set cursor pos: {msg}").as_str(),
+        )
+        .await;
+    }
+}
+
+fn set_cursor(x: u16, y: u16) -> std::io::Result<()> {
+    stdout().execute(MoveTo(x, y))?;
+    Ok(())
+}
 
 #[derive(Clone, Copy, EnumCount)]
 enum Event {
@@ -92,6 +149,7 @@ impl ANSICode {
     pub fn fcustom(r: u8, g: u8, b: u8) -> Self {
         Self::color(true, (r, g, b))
     }
+    // Look into splitting this into multiple fns in the future
     fn conv(&self) -> String {
         let mut ret = String::with_capacity(4);
         ret.push_str(CSI);
@@ -106,7 +164,6 @@ impl ANSICode {
                     ColorValue::Green => ret.push_str("0;255;0"),
                     ColorValue::Blue => ret.push_str("0;0;255"),
                     ColorValue::Custom(r, g, b) => ret.push_str(format!("{r};{g};{b}").as_str()),
-                    _ => todo!(),
                 }
                 ret.push('m');
             }
@@ -122,15 +179,11 @@ impl Display for ANSICode {
 
 impl ClientBuffer {
     pub async fn focus(&self) -> Result<(), &str> {
-        BUFMAN_GLOB
-            .write()
+        bufman_write()
             .await
             .change_focus(self.bufman_ref.clone())
             .await?;
         Ok(())
-    }
-    fn bufman_ref(&self) -> BufferRef {
-        self.bufman_ref.clone()
     }
     fn id(&self) -> BufferId {
         self.bufman_ref.id
@@ -140,7 +193,7 @@ impl ClientBuffer {
     }
 
     pub async fn set_color(&mut self, range: Range<usize>, color: ANSICode) {
-        let mut handle = BUFMAN_GLOB.write().await;
+        let mut handle = bufman_write().await;
 
         let buf = handle.get_buf_mut(self.layer(), self.id()).expect(
             format!(
@@ -154,8 +207,10 @@ impl ClientBuffer {
         buf.ctrl_codes.push((ANSICode::reset(), range.end));
     }
     pub async fn set_content(&mut self, content: String) -> Result<(), String> {
+        // TODO: We currently have two copies of the buffer content, one big String and one lines
+        // Vec. Rewrite Buffer, so everything can rely on the lines Vec.
         self.motion_stuff.content = content.lines().map(|str| str.to_string()).collect();
-        let mut handle = BUFMAN_GLOB.write().await;
+        let mut handle = bufman_write().await;
         let BufferRef { layer, id } = self.bufman_ref;
         let buf = handle.get_buf_mut(layer, id)?;
         buf.content = content;
@@ -195,7 +250,7 @@ impl ClientBuffer {
     }
 
     pub async fn move_to_layer(&mut self, layer: u8) -> Result<(), String> {
-        let mut handle = BUFMAN_GLOB.write().await;
+        let mut handle = bufman_write().await;
         let buf = handle
             .rem_buf(self.bufman_ref.layer.into(), self.bufman_ref.id)
             .await
@@ -213,9 +268,9 @@ impl ClientBuffer {
         &self.motion_stuff.content
     }
 
+    // BUG: on tiled layouts, this function yields different results, depending on when it is called. Rewrite this to not do that, as well as add more functionality (anchor content to any corner, etc.)
     pub async fn center(&self) {
-        BUFMAN_GLOB
-            .write()
+        bufman_write()
             .await
             .get_buf_mut(self.layer(), self.id())
             .expect("Orphaned Clientbuffer!")
@@ -232,28 +287,24 @@ impl Drop for ClientBuffer {
         // BUG: This causes a race condition, where BufferManager is not quick enough to clean old
         // buffers up and falsely reports, that it has no more room for new buffers
         // I'm open to suggestions on how to fix this
+        // Current Plan: Wait until AsyncDrop trait arrives in Rust
         // NOTE: look into making a separate listener thread for this
-        let handle = tokio::spawn(async move {
+        let _handle = tokio::spawn(async move {
             logger::log(
                 LogLevel::Normal,
                 format!(
                     "Dropping this Internal Buffer (id={id}): {:?}",
-                    BUFMAN_GLOB.write().await.get_buf(layer, id)
+                    bufman_write().await.get_buf(layer, id)
                 )
                 .as_str(),
             )
             .await;
-            BUFMAN_GLOB
-                .write()
-                .await
-                .rem_buf(layer.into(), id)
-                .await
-                .expect(
-                    format!(
+            bufman_write().await.rem_buf(layer.into(), id).await.expect(
+                format!(
                     "BUG: ClientBuffer ({id}) has an invalid ID! Tried to access on layer {layer}"
                 )
-                    .as_str(),
-                );
+                .as_str(),
+            );
             logger::log(LogLevel::Normal, format!("Dropped buffer {id}").as_str()).await;
         });
         // let _ = block_on(handle);
@@ -382,6 +433,7 @@ pub struct Buffer {
     height: u16,
     border: Option<BufferBorder>,
     ctrl_codes: Vec<(ANSICode, usize)>,
+    cursor_pos: CursorPosition,
     content: String,
 }
 
@@ -394,6 +446,7 @@ impl Buffer {
             height,
             border: Some(BufferBorder::default()),
             ctrl_codes: Vec::new(),
+            cursor_pos: CursorPosition { x: 0, y: 0 },
             content: String::new(),
         }
     }
@@ -408,6 +461,19 @@ impl Buffer {
     }
     pub fn offsets(&self) -> (u16, u16) {
         (self.offx, self.offy)
+    }
+    pub fn lines(&self) -> impl Iterator<Item = &str> {
+        self.content.lines()
+    }
+    pub fn set_cursor_pos(&mut self, mut new_pos: CursorPosition) {
+        let (offx, offy) = self.get_start_of_text();
+        new_pos.x += offx as u32;
+        new_pos.y += offy as u32;
+        self.cursor_pos = new_pos;
+        set_cursor(new_pos.x as u16, new_pos.y as u16);
+    }
+    pub fn cursor_position(&self) -> CursorPosition {
+        self.cursor_pos
     }
     pub fn get_start_of_text(&self) -> (u16, u16) {
         let mut x = self.offx;
@@ -897,5 +963,4 @@ pub async fn bench(buffers: usize) -> Duration {
             .await;
     }
     now.elapsed()
-    // println!("Elapsed: {:.2?}", elapsed);
 }

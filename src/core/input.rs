@@ -11,6 +11,7 @@ use strum::EnumCount;
 
 use super::event_handling::{EventCallback, EventHandler};
 use super::logger::{self, LogLevel};
+use super::render;
 use crossterm::{
     event::{
         read, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
@@ -34,7 +35,6 @@ static INPUT_EVH: Lazy<EventHandler<InputEvent, EvtData>> = Lazy::new(|| EventHa
 
 pub async fn subscribe(evcb: EventCallback<InputEvent, EvtData>) {
     INPUT_EVH.subscribe(evcb).await;
-    println!("Subscribe success!")
 }
 // TODO: when it is done in event_handling.rs
 // pub async fn unsub(evcb: EventCallback<InputEvent, EvtData>) {
@@ -102,7 +102,12 @@ pub async fn input_loop(config: InputConfig) -> Result<()> {
         let evt = read()?;
         let evt_data = Arc::new(Mutex::new(EvtData(evt.clone())));
         logger::log(LogLevel::Normal, format!("Sending event: {evt:?}").as_str()).await;
-        let evt = InputEvent(evt);
-        INPUT_EVH.dispatch(evt, evt_data).await;
+        match evt {
+            Event::Resize(_, _) => render::manager::dispatch_resize().await,
+            evt => {
+                let evt = InputEvent(evt);
+                INPUT_EVH.dispatch(evt, evt_data).await;
+            }
+        }
     }
 }
