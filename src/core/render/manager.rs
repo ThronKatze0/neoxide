@@ -86,6 +86,7 @@ impl<'a> PublicBufferReference<'a> {
 
 pub async fn focused<'a>() -> Result<PublicBufferReference<'a>, &'static str> {
     let handle = bufman_read().await;
+    logger::log(LogLevel::Debug, "Got handle!").await;
     if handle.focused.is_none() {
         return Err("no focus");
     }
@@ -105,11 +106,8 @@ pub async fn update_cursor_pos(new_pos: CursorPosition) {
                 .await
             {
                 Ok(mut buf) => {
-                    buf.cursor_pos = new_pos;
-                    match set_cursor(new_pos.x as u16, new_pos.y as u16) {
-                        Ok(_) => Ok(()),
-                        Err(err) => Err(err.to_string()),
-                    }
+                    buf.set_cursor_pos(new_pos);
+                    Ok(())
                 }
                 Err(msg) => Err(format!("error updating values: {msg}")),
             },
@@ -500,10 +498,10 @@ impl Buffer {
         self.content.iter()
     }
     pub fn set_cursor_pos(&mut self, mut new_pos: CursorPosition) {
+        self.cursor_pos = new_pos;
         let (offx, offy) = self.get_start_of_text();
         new_pos.x += offx as u32;
         new_pos.y += offy as u32;
-        self.cursor_pos = new_pos;
         set_cursor(new_pos.x as u16, new_pos.y as u16);
     }
     pub fn cursor_position(&self) -> CursorPosition {
@@ -970,9 +968,7 @@ impl BufferManager {
         id: BufferId,
     ) -> Result<DirectBufferReference, &'static str> {
         let lock = self.layers[layer as usize].lock().await;
-        if let Err(err) = lock.get_buf(id) {
-            return Err(err);
-        }
+        lock.get_buf(id)?;
         Ok(DirectBufferReference(lock, BufferRef { layer, id }))
     }
     async fn get_buf_mut(&self, layer: u8, id: BufferId) -> Result<DirectBufferReference, &str> {
