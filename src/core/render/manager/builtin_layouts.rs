@@ -119,7 +119,7 @@ impl MasterLayout {
 impl Layout for MasterLayout {
     fn get_buf(&self, name: BufferId) -> Result<&Buffer, &'static str> {
         if self.master_id == name {
-            return Ok(self.master.as_ref().unwrap());
+            return Ok(self.master.as_ref().expect("get_buf: master is None, but master_id matches requested id!"));
         }
         match self.buffers.get(&name) {
             Some(buf) => Ok(buf),
@@ -173,7 +173,10 @@ impl Layout for MasterLayout {
                 None => {
                     reorder = false;
                     match self.master.take() {
-                        Some(buf) => Ok(buf),
+                        Some(buf) => {
+                            self.master_id = u32::MAX;
+                            Ok(buf)}
+                        ,
                         None => Err("Masterlayout empty!"),
                     }
                 }
