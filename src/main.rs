@@ -72,23 +72,25 @@ async fn benchmark(rounds: u32) {
 }
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventState, KeyModifiers};
-use neoxide::core::input::{input_loop, subscribe, EvtData, InputConfig, InputEvent};
+use neoxide::core::input::{self, EvtData, InputConfig, InputEvent};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-async fn editor_demo() -> JoinHandle<std::io::Result<()>> {
-    let handle = tokio::spawn(input_loop(InputConfig {
+async fn editor_demo() {
+    let handle = tokio::spawn(input::input_loop(InputConfig {
         bracketed_paste: false,
         focus_change: false,
         mouse_capture: false,
     }));
     let buf = io::open_file("log.neo2").await.unwrap();
     let _ = buf.focus().await;
-    subscribe(EventCallback::new(
+    input::subscribe(EventCallback::new(
         Arc::new(Box::new(move |evt: Arc<Mutex<_>>| {
             let evt = evt.clone();
             let fut = async move {
+                logger::log(LogLevel::Debug, "Entering callback...").await;
                 let buf = render::manager::focused().await.unwrap();
                 let evt = evt.lock().await;
+                logger::log(LogLevel::Debug, "Locked Event...").await;
                 if let Event::Key(KeyEvent {
                     code,
                     modifiers: _,
@@ -96,22 +98,23 @@ async fn editor_demo() -> JoinHandle<std::io::Result<()>> {
                     state: _,
                 }) = evt.0
                 {
-                    let dbr = buf.deref().await;
+                    let mut dbr = buf.deref().await;
                     let content = dbr.content();
-                    if code == KeyCode::Char('j') {
-                        let pos = UpDownMotion.get_new_cursor_position(
-                            &content,
-                            &buf.deref().await.cursor_position(),
-                            MotionDirection::Foward,
-                        );
-                        logger::log(
-                            LogLevel::Normal,
-                            format!("New cursor position is {:?}", pos).as_str(),
-                        )
-                        .await;
-                        drop(dbr);
-                        drop(buf);
-                        update_cursor_pos(pos).await;
+                    logger::log(LogLevel::Debug, "Fetched buffer content...").await;
+                    if let KeyCode::Char(c) = code {
+                        if c == 'j' {
+                            let pos = UpDownMotion.get_new_cursor_position(
+                                &content,
+                                &dbr.cursor_position(),
+                                MotionDirection::Foward,
+                            );
+                            logger::log(
+                                LogLevel::Normal,
+                                format!("New cursor position is {:?}", pos).as_str(),
+                            )
+                            .await;
+                            dbr.set_cursor_pos(pos);
+                        }
                     }
                     logger::log(LogLevel::Debug, format!("Got keycode: {code}").as_str()).await;
                 }
@@ -120,12 +123,13 @@ async fn editor_demo() -> JoinHandle<std::io::Result<()>> {
         })),
         true,
         InputEvent(Event::Key(KeyEvent::new(
-            event::KeyCode::Char(' '),
+            event::KeyCode::Char(' '), // doesn't matter which char goes here
             KeyModifiers::empty(),
         ))),
     ))
     .await;
-    return handle;
+    handle.await.unwrap().unwrap();
+    drop(buf);
 }
 
 #[tokio::main]
