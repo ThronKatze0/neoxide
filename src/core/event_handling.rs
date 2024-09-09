@@ -91,6 +91,7 @@ where
             .expect(&format!("unsafe code not so good (sub;{enum_idx})"));
         let id: u32 = rand::thread_rng().gen();
         callback_map.insert(id, event_callback);
+        logger::log(LogLevel::Debug, "Added callback!").await;
         id
     }
 
@@ -105,20 +106,16 @@ where
     where
         E: Send + 'static,
     {
-        logger::log(LogLevel::Debug, format!("Dispatch before log").as_str()).await;
+        logger::log(LogLevel::Debug, "Dispatch before log").await;
         let lock = self.subscriptions.lock().await;
         // let data = Arc::new(Mutex::new(data));
         let callback_map = lock
             .get(get_enum_position(event).await as usize)
             .expect("unsafe code not so good (dispatch)");
         // I think the rustaceans consider this to be more idiomatic
-        logger::log(
-            LogLevel::Debug,
-            format!("Starting to execute callbacks").as_str(),
-        )
-        .await;
+        logger::log(LogLevel::Debug, "Starting to execute callbacks").await;
         let futs: Vec<_> = callback_map
-            .into_iter()
+            .iter()
             .map(|(_, event_callback)| {
                 let callback = Arc::clone(&event_callback.callback);
                 let callback_data = Arc::clone(&data);
