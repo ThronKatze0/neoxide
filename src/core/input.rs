@@ -1,4 +1,4 @@
-use crossterm::event::poll;
+use crossterm::event::{poll, KeyEvent, KeyModifiers};
 use std::future::Future;
 use std::io::{stdout, Result, Write};
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use crossterm::{
         read, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
         EnableFocusChange, EnableMouseCapture, Event,
     },
-    execute, queue, Command, QueueableCommand,
+    Command, QueueableCommand,
 };
 
 pub struct InputEvent(pub Event);
@@ -31,7 +31,7 @@ impl Clone for InputEvent {
 }
 
 pub struct EvtData(pub Event);
-static INPUT_EVH: Lazy<EventHandler<InputEvent, EvtData>> = Lazy::new(|| EventHandler::new());
+static INPUT_EVH: Lazy<EventHandler<InputEvent, EvtData>> = Lazy::new(EventHandler::new);
 
 pub async fn subscribe(evcb: EventCallback<InputEvent, EvtData>) {
     INPUT_EVH.subscribe(evcb).await;
@@ -76,6 +76,8 @@ fn set_opt(opt: bool, enable_com: impl Command, disable_com: impl Command) -> Re
     Ok(())
 }
 
+use crossterm::event::KeyCode;
+
 /// The main loop, that will transmit all InputEvents over the Event Handling system
 /// This function needs to be only called once on initialization (maybe I should write some code to
 /// prevent calling it multiple times) and should live in it's own tokio task. This function
@@ -103,6 +105,11 @@ pub async fn input_loop(config: InputConfig) -> Result<()> {
         let evt_data = Arc::new(Mutex::new(EvtData(evt.clone())));
         logger::log(LogLevel::Normal, format!("Sending event: {evt:?}").as_str()).await;
         match evt {
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            }) => break,
             Event::Resize(_, _) => render::manager::dispatch_resize().await,
             evt => {
                 let evt = InputEvent(evt);
@@ -110,4 +117,5 @@ pub async fn input_loop(config: InputConfig) -> Result<()> {
             }
         }
     }
+    Ok(())
 }
