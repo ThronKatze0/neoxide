@@ -9,7 +9,7 @@ pub enum MotionDirection {
 pub trait Motion {
     fn get_new_cursor_position(
         &self,
-        content: &Vec<String>,
+        content: &[String],
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition;
@@ -25,7 +25,7 @@ pub struct UntilWithoutMotion(char); // t e.g.
 impl Motion for LeftRightMotion {
     fn get_new_cursor_position(
         &self,
-        content: &Vec<String>,
+        content: &[String],
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
@@ -38,17 +38,22 @@ impl Motion for LeftRightMotion {
                 y: cursor_position.y,
             };
         }
-        CursorPosition {x: (cursor_position.x as i32 + match direction {
-            MotionDirection::Foward => 1,
-            MotionDirection::Backward => -1
-        }) as u32, y: cursor_position.y}
+        CursorPosition {
+            x: (cursor_position.x as i32
+                + match direction {
+                    MotionDirection::Foward => 1,
+                    MotionDirection::Backward => -1,
+                }) as u32,
+            y: cursor_position.y,
+        }
     }
 }
 
 impl Motion for UpDownMotion {
+    // BUG: This does not correctly calculate the cursor position with wrapped lines
     fn get_new_cursor_position(
         &self,
-        content: &Vec<String>,
+        content: &[String],
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
@@ -82,7 +87,7 @@ impl Motion for UpDownMotion {
 
 fn get_char_search(
     chr: char,
-    content: &Vec<String>,
+    content: &[String],
     cursor_position: &CursorPosition,
     direction: MotionDirection,
     with_search_result: bool,
@@ -119,7 +124,7 @@ fn get_char_search(
 impl Motion for UntilWithMotion {
     fn get_new_cursor_position(
         &self,
-        content: &Vec<String>,
+        content: &[String],
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
@@ -133,7 +138,7 @@ impl Motion for UntilWithMotion {
 impl Motion for UntilWithoutMotion {
     fn get_new_cursor_position(
         &self,
-        content: &Vec<String>,
+        content: &[String],
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
