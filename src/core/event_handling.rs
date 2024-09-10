@@ -1,10 +1,10 @@
 use futures::future::join_all;
 use rand::Rng;
-use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::{collections::HashMap, fmt::Debug};
 use strum::EnumCount;
 use strum_macros::EnumCount as EnumCountMacro;
 use tokio;
@@ -20,7 +20,7 @@ enum DemoEvent {
     Quit,
 }
 
-async fn get_enum_position<T>(enum_type: T) -> u8 {
+fn get_enum_position<T>(enum_type: T) -> u8 {
     let ptr = &enum_type as *const _ as *const u8;
     let size = std::mem::size_of_val(&enum_type);
     let bytes: &[u8] = unsafe { std::slice::from_raw_parts(ptr, size) };
@@ -43,6 +43,16 @@ pub struct EventCallback<E, D> {
     callback: EventCallbackFunctionType<D>,
     permanent: bool,
     event: E,
+}
+impl<E, D> Debug for EventCallback<E, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Callback (perm={}, evt_cnt={})",
+            self.permanent,
+            get_enum_position(&self.event)
+        )
+    }
 }
 
 impl<E, D> EventCallback<E, D> {
@@ -84,7 +94,7 @@ where
     /// returns: randomly generated id which can be used to remove the callback in the future
     pub async fn subscribe(&self, event_callback: EventCallback<E, D>) -> u32 {
         let mut lock = self.subscriptions.lock().await;
-        let enum_idx = get_enum_position(event_callback.event.clone()).await;
+        let enum_idx = get_enum_position(event_callback.event.clone());
         logger::log(LogLevel::Debug, format!("Enum pos is {enum_idx}").as_str()).await;
         let callback_map = lock
             .get_mut(enum_idx as usize)
@@ -110,7 +120,7 @@ where
         let lock = self.subscriptions.lock().await;
         // let data = Arc::new(Mutex::new(data));
         let callback_map = lock
-            .get(get_enum_position(event).await as usize)
+            .get(get_enum_position(event) as usize)
             .expect("unsafe code not so good (dispatch)");
         // I think the rustaceans consider this to be more idiomatic
         logger::log(LogLevel::Debug, "Starting to execute callbacks").await;
@@ -136,9 +146,10 @@ where
         //     // futs.push((callback)(callback_data));
         // }
         // Do something with this, if you'd like
-        let join_handle = tokio::task::spawn(async move {
-            join_all(futs.into_iter()).await;
-        });
+
+        join_all(futs.into_iter()).await; // BUG: the other stuff just breaks INPUT_EVH
+                                          // let join_handle = tokio::task::spawn(async move {
+                                          // });
     }
 }
 
@@ -148,7 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsafe_code() {
-        assert_eq!(get_enum_position(DemoEvent::Quit).await, 2);
+        assert_eq!(get_enum_position(DemoEvent::Quit), 2);
     }
 
     static mut TEST_SUCCESSFUL: bool = false;
