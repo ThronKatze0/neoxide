@@ -18,7 +18,11 @@ trait MasterLayoutClientAPI {
 
 impl MasterLayoutClientAPI for ClientBuffer {
     async fn make_master(&self) -> Result<(), &str> {
-        match bufman_write().await.layers[self.layer() as usize].downcast_mut::<MasterLayout>() {
+        match bufman_read().await.layers[self.layer() as usize]
+            .lock()
+            .await
+            .downcast_mut::<MasterLayout>()
+        {
             Some(masterl) => masterl.change_master(self.id()),
             None => Err("Layer is not a MasterLayout"),
         }
@@ -115,7 +119,7 @@ impl MasterLayout {
 impl Layout for MasterLayout {
     fn get_buf(&self, name: BufferId) -> Result<&Buffer, &'static str> {
         if self.master_id == name {
-            return Ok(self.master.as_ref().unwrap());
+            return Ok(self.master.as_ref().expect("get_buf: master is None, but master_id matches requested id!"));
         }
         match self.buffers.get(&name) {
             Some(buf) => Ok(buf),
@@ -140,7 +144,7 @@ impl Layout for MasterLayout {
         render_internal_faster(buffers.into_iter(), render_buf).await;
     }
 
-    async fn add_buf(&mut self, _name: BufferId, buf: Buffer) -> Result<BufferId, &str> {
+    async fn add_buf(&mut self, _name: BufferId, buf: Buffer) -> Result<BufferId, &'static str> {
         let name = self.get_id();
         if self.master.is_none() {
             self.master = Some(buf);
@@ -169,7 +173,10 @@ impl Layout for MasterLayout {
                 None => {
                     reorder = false;
                     match self.master.take() {
-                        Some(buf) => Ok(buf),
+                        Some(buf) => {
+                            self.master_id = u32::MAX;
+                            Ok(buf)}
+                        ,
                         None => Err("Masterlayout empty!"),
                     }
                 }
