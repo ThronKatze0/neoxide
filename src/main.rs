@@ -1,4 +1,4 @@
-use neoxide::core::editor::motions::{Motion, MotionDirection, UpDownMotion};
+use neoxide::core::editor::motions::{LeftRightMotion, Motion, MotionDirection, UpDownMotion};
 use neoxide::core::event_handling::EventCallback;
 use neoxide::core::{io, logger, render};
 use std::io::{prelude::*, stdin};
@@ -62,7 +62,6 @@ use neoxide::core::render::manager::{bench, update_cursor_pos, ContentRef};
 
 async fn benchmark(rounds: u32) {
     let mut sum: Duration = Default::default();
-    let rounds = 100;
     for i in 0..rounds {
         log(LogLevel::Debug, format!("round {}", i + 1).as_str()).await;
         sum.add_assign(bench(10).await);
@@ -71,7 +70,7 @@ async fn benchmark(rounds: u32) {
     println!("Avg time per round: {:.3?}", sum.div_f64(rounds.into()));
 }
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventState, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 use neoxide::core::input::{self, EvtData, InputConfig, InputEvent};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -87,34 +86,49 @@ async fn editor_demo() {
         Arc::new(Box::new(move |evt: Arc<Mutex<_>>| {
             let evt = evt.clone();
             let fut = async move {
-                logger::log(LogLevel::Debug, "Entering callback...").await;
                 let buf = render::manager::focused().await.unwrap();
                 let evt = evt.lock().await;
-                logger::log(LogLevel::Debug, "Locked Event...").await;
                 if let Event::Key(KeyEvent {
                     code,
                     modifiers: _,
-                    kind: _,
+                    kind: KeyEventKind::Press,
                     state: _,
                 }) = evt.0
                 {
                     let mut dbr = buf.deref().await;
                     let content = dbr.content();
+                    let cursor_position = &dbr.cursor_position();
                     logger::log(LogLevel::Debug, "Fetched buffer content...").await;
                     if let KeyCode::Char(c) = code {
-                        if c == 'j' {
-                            let pos = UpDownMotion.get_new_cursor_position(
+                        let pos = match c {
+                            'j' => UpDownMotion.get_new_cursor_position(
                                 &content,
-                                &dbr.cursor_position(),
+                                cursor_position,
                                 MotionDirection::Foward,
-                            );
-                            logger::log(
-                                LogLevel::Normal,
-                                format!("New cursor position is {:?}", pos).as_str(),
-                            )
-                            .await;
-                            dbr.set_cursor_pos(pos);
-                        }
+                            ),
+                            'k' => UpDownMotion.get_new_cursor_position(
+                                &content,
+                                cursor_position,
+                                MotionDirection::Backward,
+                            ),
+                            'h' => LeftRightMotion.get_new_cursor_position(
+                                &content,
+                                cursor_position,
+                                MotionDirection::Backward,
+                            ),
+                            'l' => LeftRightMotion.get_new_cursor_position(
+                                &content,
+                                cursor_position,
+                                MotionDirection::Foward,
+                            ),
+                            _ => todo!(),
+                        };
+                        logger::log(
+                            LogLevel::Normal,
+                            format!("New cursor position is {:?}", pos).as_str(),
+                        )
+                        .await;
+                        dbr.set_cursor_pos(pos);
                     }
                     logger::log(LogLevel::Debug, format!("Got keycode: {code}").as_str()).await;
                 }
