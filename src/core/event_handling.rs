@@ -105,6 +105,18 @@ where
         id
     }
 
+    pub async fn unsubscribe(&self, event: E, id: u32) -> Result<(), &str> {
+        let mut lock = self.subscriptions.lock().await;
+        let enum_idx = get_enum_position(event);
+        let callback_map = lock
+            .get_mut(enum_idx as usize)
+            .expect(&format!("unsafe code not so good (sub;{enum_idx})"));
+        match callback_map.remove(&id) {
+            Some(_) => Ok(()),
+            None => Err("not found"),
+        }
+    }
+
     /// executes all callbacks associated with ``event`` at that moment.
     ///     - ``event``: event to be triggered
     ///     - ``data``: any associated data with the event (Note: the current implementation
