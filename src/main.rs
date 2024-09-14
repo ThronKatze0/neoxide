@@ -95,39 +95,40 @@ async fn editor_demo() {
                     state: _,
                 }) = evt.0
                 {
-                    let mut dbr = buf.deref().await;
-                    let content = dbr.content();
+                    let dbr = buf.deref().await;
                     let cursor_position = &dbr.cursor_position();
                     logger::log(LogLevel::Debug, "Fetched buffer content...").await;
                     if let KeyCode::Char(c) = code {
                         let pos = match c {
                             'j' => UpDownMotion.get_new_cursor_position(
-                                &content,
+                                dbr,
                                 cursor_position,
                                 MotionDirection::Foward,
                             ),
                             'k' => UpDownMotion.get_new_cursor_position(
-                                &content,
+                                dbr,
                                 cursor_position,
                                 MotionDirection::Backward,
                             ),
                             'h' => LeftRightMotion.get_new_cursor_position(
-                                &content,
+                                dbr,
                                 cursor_position,
                                 MotionDirection::Backward,
                             ),
                             'l' => LeftRightMotion.get_new_cursor_position(
-                                &content,
+                                dbr,
                                 cursor_position,
                                 MotionDirection::Foward,
                             ),
                             _ => todo!(),
-                        };
+                        }
+                        .await;
                         logger::log(
                             LogLevel::Normal,
                             format!("New cursor position is {:?}", pos).as_str(),
                         )
                         .await;
+                        let mut dbr = buf.deref().await;
                         dbr.set_cursor_pos(pos);
                     }
                     logger::log(LogLevel::Debug, format!("Got keycode: {code}").as_str()).await;
