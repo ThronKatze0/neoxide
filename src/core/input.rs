@@ -1,6 +1,6 @@
 use crossterm::event::{poll, KeyEvent, KeyModifiers};
 use std::future::Future;
-use std::io::{stdout, Result, Write};
+use std::io::{stdout, Result as IoResult, Write};
 use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
@@ -33,17 +33,16 @@ impl Clone for InputEvent {
 pub struct EvtData(pub Event);
 static INPUT_EVH: Lazy<EventHandler<InputEvent, EvtData>> = Lazy::new(EventHandler::new);
 
-pub async fn subscribe(evcb: EventCallback<InputEvent, EvtData>) {
-    INPUT_EVH.subscribe(evcb).await;
+pub async fn subscribe(evcb: EventCallback<InputEvent, EvtData>) -> u32 {
+    INPUT_EVH.subscribe(evcb).await
 }
-// TODO: when it is done in event_handling.rs
-// pub async fn unsub(evcb: EventCallback<InputEvent, EvtData>) {
-//     INPUT_EVH.(evcb).await;
-// }
+pub async fn unsub(event: InputEvent, id: u32) -> Result<(), &'static str> {
+    INPUT_EVH.unsubscribe(event, id).await
+}
 
 struct InputFuture;
 impl Future for InputFuture {
-    type Output = Result<Event>;
+    type Output = IoResult<Event>;
     fn poll(
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
@@ -67,7 +66,7 @@ pub struct InputConfig {
     pub mouse_capture: bool,
 }
 
-fn set_opt(opt: bool, enable_com: impl Command, disable_com: impl Command) -> Result<()> {
+fn set_opt(opt: bool, enable_com: impl Command, disable_com: impl Command) -> IoResult<()> {
     if opt {
         stdout().queue(enable_com)?;
     } else {
@@ -78,14 +77,14 @@ fn set_opt(opt: bool, enable_com: impl Command, disable_com: impl Command) -> Re
 
 use crossterm::event::KeyCode;
 
-/// The main loop, that will transmit all InputEvents over the Event Handling system
+/// The main loop, that will transmit all InputEvents over the Event Handling system.
 /// This function needs to be only called once on initialization (maybe I should write some code to
 /// prevent calling it multiple times) and should live in it's own tokio task. This function
 /// follows the fail-fast principle, and returns on the first IO error it sees, which means that
 /// once crossterm breaks, you can't send keypresses etc. anymore
 /// All Events are directly transferred to the dedicated Event Handler, provided through a
 /// newtype pattern, which implements the Clone- and EnumCount traits for the events
-pub async fn input_loop(config: InputConfig) -> Result<()> {
+pub async fn input_loop(config: InputConfig) -> IoResult<()> {
     set_opt(
         config.bracketed_paste,
         EnableBracketedPaste,
