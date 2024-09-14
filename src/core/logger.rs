@@ -38,7 +38,10 @@ impl<'a> Message<'a> {
         format!("[{}] {}\n", self.level.to_string(), self.msg)
     }
     pub async fn log_full(&self, mut stream: impl AsyncWrite + Unpin) -> std::io::Result<()> {
-        stream.write(self.format().as_bytes()).await?;
+        assert_eq!(
+            stream.write(self.format().as_bytes()).await?,
+            self.format().as_bytes().len()
+        );
         stream.flush().await?;
         Ok(())
     }
