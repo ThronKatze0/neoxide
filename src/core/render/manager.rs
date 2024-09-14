@@ -208,16 +208,30 @@ impl Display for ANSICode {
 }
 
 impl ClientBuffer {
-    pub async fn focus(&self) -> Result<(), &str> {
+    pub async fn focus(&self) -> Result<(), String> {
         bufman_write()
             .await
             .change_focus(self.bufman_ref.clone())
             .await?;
+
+        let (x, y) = bufman_read()
+            .await
+            .get_buf(self.layer(), self.id())
+            .await
+            .unwrap()
+            .get_start_of_text();
+        set_cursor(x, y).map_err(|err| err.to_string())?;
+
+        //if let Err(err) = set_cursor(x as u16, y as u16) {
+        //    return Err(format!("set_cursor: {}", err.to_string()));
+        //}
         Ok(())
     }
+    #[inline]
     fn id(&self) -> BufferId {
         self.bufman_ref.id
     }
+    #[inline]
     fn layer(&self) -> u8 {
         self.bufman_ref.layer
     }
@@ -295,8 +309,14 @@ impl ClientBuffer {
     pub fn cursor_position(&self) -> &CursorPosition {
         &self.motion_stuff.cursor_position
     }
-    pub async fn get_content(&self) -> PublicBufferReference {
+    async fn get_pbr(&self) -> PublicBufferReference {
         PublicBufferReference(bufman_read().await, self.bufman_ref.clone())
+    }
+    pub async fn get_content(&self) -> PublicBufferReference<'_> {
+        self.get_pbr().await
+    }
+    pub async fn dims(&self) -> impl BufferDims + use<'_> {
+        self.get_pbr().await
     }
 
     // BUG: on tiled layouts, this function yields different results, depending on when it is called. Rewrite this to not do that, as well as add more functionality (anchor content to any corner, etc.)
@@ -307,6 +327,74 @@ impl ClientBuffer {
             .await
             .expect("Orphaned Clientbuffer!")
             .center()
+    }
+}
+
+#[async_trait]
+pub trait BufferDims {
+    async fn width(&self) -> u16;
+    async fn height(&self) -> u16;
+    async fn offx(&self) -> u16;
+    async fn offy(&self) -> u16;
+    async fn tpad(&self) -> u16;
+    async fn dpad(&self) -> u16;
+    async fn lpad(&self) -> u16;
+    async fn rpad(&self) -> u16;
+}
+
+#[async_trait]
+impl BufferDims for PublicBufferReference<'_> {
+    async fn dpad(&self) -> u16 {
+        self.deref().await.dpad().await
+    }
+    async fn tpad(&self) -> u16 {
+        self.deref().await.tpad().await
+    }
+    async fn lpad(&self) -> u16 {
+        self.deref().await.lpad().await
+    }
+    async fn rpad(&self) -> u16 {
+        self.deref().await.rpad().await
+    }
+    async fn offx(&self) -> u16 {
+        self.deref().await.offx().await
+    }
+    async fn offy(&self) -> u16 {
+        self.deref().await.offy().await
+    }
+    async fn width(&self) -> u16 {
+        self.deref().await.width().await
+    }
+    async fn height(&self) -> u16 {
+        self.deref().await.height().await
+    }
+}
+const BLANK_BORDER: BufferBorder = BufferBorder::blank();
+#[async_trait]
+impl BufferDims for DirectBufferReference<'_> {
+    async fn dpad(&self) -> u16 {
+        self.border.as_ref().unwrap_or(&BLANK_BORDER).dpad
+    }
+    async fn tpad(&self) -> u16 {
+        self.border.as_ref().unwrap_or(&BufferBorder::blank()).tpad
+    }
+    async fn lpad(&self) -> u16 {
+        self.border.as_ref().unwrap_or(&BufferBorder::blank()).lpad
+    }
+    async fn rpad(&self) -> u16 {
+        self.border.as_ref().unwrap_or(&BufferBorder::blank()).rpad
+    }
+    async fn offx(&self) -> u16 {
+        self.offx
+    }
+    async fn offy(&self) -> u16 {
+        self.offy
+    }
+    async fn width(&self) -> u16 {
+        self.width
+    }
+    async fn height(&self) -> u16 {
+        self.height
     }
 }
 
@@ -378,7 +466,7 @@ impl BufferBorder {
             dpad,
         }
     }
-    pub fn blank() -> BufferBorder {
+    pub const fn blank() -> BufferBorder {
         BufferBorder {
             border_shown: 0xF,
             corner: [CORNER; 4],
@@ -973,9 +1061,7 @@ impl BufferManager {
     }
     async fn get_buf_mut(&self, layer: u8, id: BufferId) -> Result<DirectBufferReference, &str> {
         let lock = self.layers[layer as usize].lock().await;
-        if let Err(err) = lock.get_buf(id) {
-            return Err(err);
-        }
+        lock.get_buf(id)?;
         Ok(DirectBufferReference(lock, BufferRef { layer, id }))
     }
 
