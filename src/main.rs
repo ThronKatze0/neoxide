@@ -49,10 +49,11 @@ async fn demo_render() -> std::io::Result<()> {
     buf2.set_content(String::from("Test 2")).await.unwrap();
     buf1.center().await;
     let mut buf3 = ClientBuffer::build(0, true).await.unwrap();
-    buf1.focus().await.unwrap();
     buf3.set_content(String::from("Test 3")).await.unwrap();
+    buf1.focus().await.unwrap(); // too much stuff depends on it getting called at exactly the
+                                 // right time. Needless to say, make it not
     drop(buf1);
-    drop(buf2);
+    // drop(buf2);
     terminal::disable_raw_mode()?;
     Ok(())
 }
@@ -121,8 +122,7 @@ async fn editor_demo() {
                                 MotionDirection::Foward,
                             ),
                             _ => todo!(),
-                        }
-                        .await;
+                        };
                         logger::log(
                             LogLevel::Normal,
                             format!("New cursor position is {:?}", pos).as_str(),

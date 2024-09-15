@@ -82,6 +82,12 @@ impl<'a> PublicBufferReference<'a> {
             .await
             .expect("Orphaned Buffer Reference!")
     }
+    pub async fn dims(&self) -> impl BufferDims + use<'_> {
+        self.deref().await
+    }
+    pub async fn get_content(&self) -> impl ContentRef + use<'_> {
+        self.deref().await
+    }
 }
 
 pub async fn focused<'a>() -> Result<PublicBufferReference<'a>, &'static str> {
@@ -312,12 +318,6 @@ impl ClientBuffer {
     async fn get_pbr(&self) -> PublicBufferReference {
         PublicBufferReference(bufman_read().await, self.bufman_ref.clone())
     }
-    pub async fn get_content(&self) -> PublicBufferReference<'_> {
-        self.get_pbr().await
-    }
-    pub async fn dims(&self) -> impl BufferDims + use<'_> {
-        self.get_pbr().await
-    }
 
     // BUG: on tiled layouts, this function yields different results, depending on when it is called. Rewrite this to not do that, as well as add more functionality (anchor content to any corner, etc.)
     pub async fn center(&self) {
@@ -332,69 +332,49 @@ impl ClientBuffer {
 
 #[async_trait]
 pub trait BufferDims {
-    async fn width(&self) -> u16;
-    async fn height(&self) -> u16;
-    async fn offx(&self) -> u16;
-    async fn offy(&self) -> u16;
-    async fn tpad(&self) -> u16;
-    async fn dpad(&self) -> u16;
-    async fn lpad(&self) -> u16;
-    async fn rpad(&self) -> u16;
+    fn width(&self) -> u16;
+    fn height(&self) -> u16;
+    fn offx(&self) -> u16;
+    fn offy(&self) -> u16;
+    fn tpad(&self) -> u16;
+    fn dpad(&self) -> u16;
+    fn lpad(&self) -> u16;
+    fn rpad(&self) -> u16;
+    fn get_text_len(&self) -> u16;
 }
 
-#[async_trait]
-impl BufferDims for PublicBufferReference<'_> {
-    async fn dpad(&self) -> u16 {
-        self.deref().await.dpad().await
-    }
-    async fn tpad(&self) -> u16 {
-        self.deref().await.tpad().await
-    }
-    async fn lpad(&self) -> u16 {
-        self.deref().await.lpad().await
-    }
-    async fn rpad(&self) -> u16 {
-        self.deref().await.rpad().await
-    }
-    async fn offx(&self) -> u16 {
-        self.deref().await.offx().await
-    }
-    async fn offy(&self) -> u16 {
-        self.deref().await.offy().await
-    }
-    async fn width(&self) -> u16 {
-        self.deref().await.width().await
-    }
-    async fn height(&self) -> u16 {
-        self.deref().await.height().await
-    }
-}
 const BLANK_BORDER: BufferBorder = BufferBorder::blank();
-#[async_trait]
 impl BufferDims for DirectBufferReference<'_> {
-    async fn dpad(&self) -> u16 {
+    fn dpad(&self) -> u16 {
         self.border.as_ref().unwrap_or(&BLANK_BORDER).dpad
     }
-    async fn tpad(&self) -> u16 {
+    fn tpad(&self) -> u16 {
         self.border.as_ref().unwrap_or(&BufferBorder::blank()).tpad
     }
-    async fn lpad(&self) -> u16 {
+    fn lpad(&self) -> u16 {
         self.border.as_ref().unwrap_or(&BufferBorder::blank()).lpad
     }
-    async fn rpad(&self) -> u16 {
+    fn rpad(&self) -> u16 {
         self.border.as_ref().unwrap_or(&BufferBorder::blank()).rpad
     }
-    async fn offx(&self) -> u16 {
+    fn offx(&self) -> u16 {
         self.offx
     }
-    async fn offy(&self) -> u16 {
+    fn offy(&self) -> u16 {
         self.offy
     }
-    async fn width(&self) -> u16 {
+    fn width(&self) -> u16 {
         self.width
     }
-    async fn height(&self) -> u16 {
+    fn height(&self) -> u16 {
         self.height
+    }
+    fn get_text_len(&self) -> u16 {
+        let mut not_text_space = 0;
+        if let Some(border) = &self.border {
+            not_text_space += border.lpad + border.rpad + border.get_number_of_borders().0;
+        }
+        self.width - not_text_space
     }
 }
 

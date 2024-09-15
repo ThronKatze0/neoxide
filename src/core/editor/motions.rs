@@ -1,8 +1,7 @@
 use crate::core::{
-    editor::{Buffer, CursorPosition},
-    render::manager::{self, BufferDims, ContentRef},
+    editor::CursorPosition,
+    render::manager::{BufferDims, ContentRef},
 };
-use async_trait::async_trait;
 
 #[derive(PartialEq)]
 pub enum MotionDirection {
@@ -10,11 +9,10 @@ pub enum MotionDirection {
     Backward,
 }
 
-#[async_trait]
 pub trait Motion {
-    async fn get_new_cursor_position(
+    fn get_new_cursor_position(
         &self,
-        buf: impl BufferDims + ContentRef + Send,
+        buf: impl BufferDims + ContentRef,
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition;
@@ -27,20 +25,18 @@ pub struct EndWordMotion; // e e.g.
 pub struct UntilWithMotion(char); // f e.g.
 pub struct UntilWithoutMotion(char); // t e.g.
 
-#[async_trait]
 impl Motion for LeftRightMotion {
-    async fn get_new_cursor_position(
+    fn get_new_cursor_position(
         &self,
-        buf: impl BufferDims + ContentRef + Send,
+        buf: impl BufferDims + ContentRef,
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
-        let line_len = std::cmp::min(
-            buf.content().get(cursor_position.y as usize).unwrap().len(),
-            (buf.width().await - buf.lpad().await - buf.rpad().await) as usize,
-        );
+        let text_len = buf.get_text_len() as u32;
+        let start_of_text: u32 = 0;
+        let line_len = std::cmp::min(get_line_len(buf, cursor_position.y as usize), text_len);
         if (direction == MotionDirection::Foward && cursor_position.x == line_len as u32 - 1)
-            || (direction == MotionDirection::Backward && cursor_position.x == 0)
+            || (direction == MotionDirection::Backward && cursor_position.x == start_of_text.into())
         {
             return CursorPosition {
                 x: cursor_position.x,
@@ -58,43 +54,44 @@ impl Motion for LeftRightMotion {
     }
 }
 
-async fn get_lines<T>(buf: T) -> (u32, T)
+fn get_lines<T>(buf: &T) -> u32
 where
-    T: BufferDims + ContentRef + Send,
+    T: BufferDims + ContentRef,
 {
     let mut ret = 0;
     for line in buf.content().iter() {
-        ret += line.len() as u32 % buf.width().await as u32;
+        ret += line.len() as u32 / buf.get_text_len() as u32 + 1;
     }
-    (ret, buf)
+    ret
 }
-async fn get_line_len(buf: impl BufferDims + ContentRef + Send, y: usize) -> u32 {
-    //if y >= buf.content().len() {
-    //    return buf.content()[buf.content().len() - 1].len() as u32;
-    //}
+fn get_line_len(buf: impl BufferDims + ContentRef, y: usize) -> u32 {
     let mut line_idx = 0;
     let mut vec_idx = 0;
-    for line in buf.content().iter() {
-        if line_idx >= y {
-            break;
+    let mut start_idx = 0;
+    let content = buf.content();
+    let text_len = buf.get_text_len() as usize - 2; // no idea why -2 is there
+    while line_idx < y {
+        if content[vec_idx].len() - start_idx <= text_len {
+            start_idx = 0;
+            vec_idx += 1;
+        } else {
+            start_idx += text_len;
         }
-        line_idx += line.len() % buf.width().await as usize + 1;
-        vec_idx += 1;
+        line_idx += 1;
     }
-    buf.content()[vec_idx].len() as u32
+    (content[vec_idx].len() - start_idx) as u32
 }
 
-#[async_trait]
 impl Motion for UpDownMotion {
-    async fn get_new_cursor_position(
+    fn get_new_cursor_position(
         &self,
-        buf: impl BufferDims + ContentRef + Send,
+        buf: impl BufferDims + ContentRef,
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
-        let (len, buf) = get_lines(buf).await;
+        let len = get_lines(&buf);
         if (direction == MotionDirection::Foward
-            && cursor_position.y == std::cmp::min(buf.height().await, len as u16) as u32 - 1)
+            && cursor_position.y == std::cmp::min(buf.height(), len as u16) as u32 - 1)
             || (direction == MotionDirection::Backward && cursor_position.y == 0)
         {
             return CursorPosition {
@@ -107,7 +104,7 @@ impl Motion for UpDownMotion {
                 MotionDirection::Foward => 1,
                 MotionDirection::Backward => -1,
             }) as usize;
-        let new_line_len: u32 = get_line_len(buf, new_y).await; //buf.content().get(new_y).unwrap().len() as u32;
+        let new_line_len: u32 = get_line_len(buf, new_y); //buf.content().get(new_y).unwrap().len() as u32;
         if new_line_len - 1 <= cursor_position.x {
             CursorPosition {
                 x: new_line_len - 1,
@@ -158,11 +155,10 @@ fn get_char_search(
     cursor_position.x
 }
 
-#[async_trait]
 impl Motion for UntilWithMotion {
-    async fn get_new_cursor_position(
+    fn get_new_cursor_position(
         &self,
-        buf: impl BufferDims + ContentRef + Send,
+        buf: impl BufferDims + ContentRef,
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
@@ -173,11 +169,10 @@ impl Motion for UntilWithMotion {
     }
 }
 
-#[async_trait]
 impl Motion for UntilWithoutMotion {
-    async fn get_new_cursor_position(
+    fn get_new_cursor_position(
         &self,
-        buf: impl BufferDims + ContentRef + Send,
+        buf: impl BufferDims + ContentRef,
         cursor_position: &CursorPosition,
         direction: MotionDirection,
     ) -> CursorPosition {
@@ -206,31 +201,33 @@ mod test {
             &self.content
         }
     }
-    #[async_trait]
     impl BufferDims for TestBuffer {
-        async fn lpad(&self) -> u16 {
+        fn lpad(&self) -> u16 {
             self.border.lpad
         }
-        async fn height(&self) -> u16 {
+        fn height(&self) -> u16 {
             self.height
         }
-        async fn rpad(&self) -> u16 {
+        fn rpad(&self) -> u16 {
             self.border.rpad
         }
-        async fn tpad(&self) -> u16 {
+        fn tpad(&self) -> u16 {
             self.border.tpad
         }
-        async fn dpad(&self) -> u16 {
+        fn dpad(&self) -> u16 {
             self.border.dpad
         }
-        async fn width(&self) -> u16 {
+        fn width(&self) -> u16 {
             self.width
         }
-        async fn offy(&self) -> u16 {
+        fn offy(&self) -> u16 {
             self.offy
         }
-        async fn offx(&self) -> u16 {
+        fn offx(&self) -> u16 {
             self.offx
+        }
+        fn get_text_len(&self) -> u16 {
+            self.width - self.lpad() - self.rpad()
         }
     }
 
@@ -311,11 +308,7 @@ mod test {
                 y: 2,
             };
             assert_eq!(
-                block_on(motion.get_new_cursor_position(
-                    content,
-                    &cursor_position,
-                    MotionDirection::Foward
-                )),
+                motion.get_new_cursor_position(content, &cursor_position, MotionDirection::Foward),
                 CursorPosition {
                     x: line_len - 1,
                     y: 2
@@ -335,11 +328,7 @@ mod test {
             let motion = UntilWithMotion('l');
             let cursor_position = CursorPosition { x: 3, y: 0 };
             assert_eq!(
-                block_on(motion.get_new_cursor_position(
-                    content,
-                    &cursor_position,
-                    MotionDirection::Foward
-                )),
+                motion.get_new_cursor_position(content, &cursor_position, MotionDirection::Foward),
                 CursorPosition { x: 10, y: 0 }
             )
         }
@@ -350,11 +339,11 @@ mod test {
             let motion = UntilWithMotion('i');
             let cursor_position = CursorPosition { x: 10, y: 0 };
             assert_eq!(
-                block_on(motion.get_new_cursor_position(
+                motion.get_new_cursor_position(
                     content,
                     &cursor_position,
                     MotionDirection::Backward
-                )),
+                ),
                 CursorPosition { x: 5, y: 0 }
             )
         }
