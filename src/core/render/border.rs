@@ -194,8 +194,15 @@ impl Buffer {
                 let mut i = 0;
                 let mut skip_newline = false;
                 let content_width =
-                    (width_without_border - params.border.lpad - params.border.rpad) as usize;
-                while i < content.len() {
+                    (width_without_border - params.border.lpad - params.border.rpad - hborders)
+                        as usize;
+                while i < content.len()
+                    && params.offy
+                        <= (orig_offy as u16 + height
+                            - params.border.dpad
+                            - if borders_shown[2] { 1 } else { 0 })
+                            as usize
+                {
                     let end_idx = if let Some(newline_idx) = content[i..].find('\n') {
                         skip_newline = true;
                         i + newline_idx
