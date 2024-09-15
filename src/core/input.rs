@@ -109,6 +109,10 @@ pub async fn input_loop(config: InputConfig) -> IoResult<()> {
                 modifiers: KeyModifiers::CONTROL,
                 ..
             }) => break,
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            }) if c >= '0' && c <= '9' => {}
             Event::Resize(_, _) => render::manager::dispatch_resize().await,
             evt => {
                 let evt = InputEvent(evt);
